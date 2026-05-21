@@ -1,0 +1,4 @@
+pre-commit:
+  commands:
+    check-ozy-cli-version:
+      run: bun src/scripts/check-npm-version.ts

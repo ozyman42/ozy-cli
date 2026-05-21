@@ -1,11 +1,27 @@
 {
   "name": "@ozyman42/ozy-cli",
-  "description": "Ozymandias' personal tools",
   "version": "0.0.1",
+  "description": "Ozymandias' personal tools",
+  "type": "module",
+  "bin": {
+    "ozy": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun src/scripts/build.ts",
+    "prepare": "lefthook install"
+  },
   "devDependencies": {
     "@types/bun": "^1.1.14",
     "@types/expand-tilde": "^2.0.2",
-    "bun-types": "latest"
+    "bun-types": "latest",
+    "lefthook": "latest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ozyman42/ozy-cli.git"
   },
   "dependencies": {
     "commander": "^13.1.0",
