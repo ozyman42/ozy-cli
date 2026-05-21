@@ -5,6 +5,7 @@ import { makeCommand } from '../../common/command';
 import { log } from '../../common/log';
 import { type Result, Ok, Err } from '../../common/result';
 import { getSSHConfig, getUsername } from "../../common/ssh";
+import { Option } from "effect";
 
 enum GitConfigLocation {
   Local = 'local',
@@ -135,7 +136,7 @@ async function gitSetup(): Promise<Result<true, GitSetupError>> {
   
   // 8. Get username by testing the SSH connection
   const username = await getUsername(sshHost);
-  if (!username)
+  if (Option.isNone(username))
     return Err(
       GitSetupError.SSHPubkeyNotAttachedToUserError,
       `Could not determine username. Check if pubkey at ${identityFilePath} is saved in github as an AuthN key`
@@ -146,7 +147,7 @@ async function gitSetup(): Promise<Result<true, GitSetupError>> {
   await setGitValue('tag.gpgsign', 'true', GitConfigLocation.Global);
   await setGitValue('gpg.format', 'ssh', GitConfigLocation.Global);
   await setGitValue('user.signingkey', identityFilePath.replaceAll("\\", "/"), GitConfigLocation.Local);
-  await setGitValue('user.name', username, GitConfigLocation.Local);
+  await setGitValue('user.name', username.value, GitConfigLocation.Local);
   await setGitValue('user.email', email, GitConfigLocation.Local);
 
   return Ok(true);

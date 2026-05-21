@@ -5,6 +5,7 @@ import { log } from './log';
 import { Err, Ok, type Result } from './result';
 import { z } from 'zod';
 import expandTilde from 'expand-tilde';
+import { Option } from 'effect';
 
 const SSHConfigSectionSchema = z.object({
   HostName: z.string(),
@@ -24,7 +25,7 @@ export type SSHConfigHosts = z.infer<typeof SSHConfigHostsSchema>;
 export enum GetSSHConfigError {
   SSHConfigFileMissingError = 'SSHConfigFileMissingError',
   ParseError = 'ParseError',
-  DuplicateHostError = 'DupublicatHostError',
+  DuplicateHostError = 'DuplicateHostError',
   EntryNotAHostKeyValuePairError = 'EntryNotAHostKeyValuePairError',
   MissingHostNameError = 'MissingHostNameError',
   MissingUserError = 'MissingUserError',
@@ -103,25 +104,25 @@ export async function getSSHConfig(sshConfigPathPartial = '~/.ssh/config'): Prom
   }
 }
 
-export async function getUsername(sshHost: string): Promise<string | undefined> {
+export async function getUsername(sshHost: string): Promise<Option.Option<string>> {
   try {
     const { stdout } = (await $`ssh -T ${sshHost} 2>&1`.nothrow().quiet());
     const output = stdout.toString().trim();
     if (output.startsWith('ssh: Could not resolve')) {
       log(output);
-      return undefined;
+      return Option.none();
     } else if (output.startsWith('Hi ')) {
       const name = output.substring('Hi '.length).split('!')[0];
-      return name;
+      return Option.some(name);
     } else {
       log('Unable to discern output ssh -T output format');
       log(output);
-      return undefined;
+      return Option.none();
     }
   } catch (e) {
     const error = e as Error;
     log('unable to get username due to');
     log(error);
-    return undefined;
+    return Option.none();
   }
 }
