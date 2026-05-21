@@ -7,9 +7,13 @@ export function makeCommand<E>(name: string, description: string,
   return new Command(name)
     .description(description)
     .action(async () => {
-      const result = await action();
-      if (!result.success) {
-        log(`${result.error}: ${result.reason}`);
+      try {
+        const result = await action();
+        if (!result.success) {
+          log(`✗ ${result.error}: ${result.reason}`);
+        }
+      } catch (err) {
+        log(`✗ unexpected error: ${err instanceof Error ? err.message : String(err)}`);
       }
       process.exit();
     })
