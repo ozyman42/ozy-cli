@@ -25,6 +25,10 @@ export interface WorkingTreeGitEntry {
   type: "file" | "dir" | "missing";
   /** Content of the gitdir: line when type === "file" */
   gitdirTarget?: string;
+  /** Result of `git remote get-url origin` run inside the working tree dir */
+  remote?: string | { error: string };
+  /** Result of `git rev-parse HEAD` run inside the working tree dir */
+  headCommit?: string | { error: string };
 }
 
 export interface IndexGitlink {
@@ -37,6 +41,8 @@ export interface GitState {
   config: GitConfigSubmodule[];
   /** Git dirs found under .git/modules/, each with their remote URL */
   moduleDirs: ModuleDirInfo[];
+  /** Dirs under .git/modules/ that contain no HEAD file and aren't prefixes of any known module path */
+  orphanModuleDirs: string[];
   /** Gitlink entries recorded in the index (mode 160000) */
   index: IndexGitlink[];
   /** State of .git file/dir in each known submodule working tree path */
@@ -79,21 +85,40 @@ function parseIndexGitlinks(output: string): IndexGitlink[] {
     });
 }
 
-/** Recursively finds directories under root that contain a HEAD file (real git dirs). */
-function findGitDirs(root: string, rel = ""): string[] {
-  if (!existsSync(root)) return [];
-  const results: string[] = [];
+/**
+ * Recursively scans .git/modules/, returning:
+ * - gitDirs: paths of real git dirs (contain a HEAD file)
+ * - orphanDirs: paths that are neither a git dir nor a prefix of any known module path
+ */
+function scanModuleDirs(
+  root: string,
+  modulePaths: Set<string>,
+  rel = "",
+): { gitDirs: string[]; orphanDirs: string[] } {
+  const gitDirs: string[] = [];
+  const orphanDirs: string[] = [];
+  if (!existsSync(root)) return { gitDirs, orphanDirs };
+
   for (const entry of readdirSync(root)) {
     const abs = join(root, entry);
-    const relPath = rel ? `${rel}/${entry}` : entry;
     if (!statSync(abs).isDirectory()) continue;
+    const relPath = rel ? `${rel}/${entry}` : entry;
+
     if (existsSync(join(abs, "HEAD"))) {
-      results.push(relPath);
+      gitDirs.push(relPath);
     } else {
-      results.push(...findGitDirs(abs, relPath));
+      const isPrefix = [...modulePaths].some((p) => p.startsWith(relPath + "/"));
+      if (isPrefix) {
+        const sub = scanModuleDirs(abs, modulePaths, relPath);
+        gitDirs.push(...sub.gitDirs);
+        orphanDirs.push(...sub.orphanDirs);
+      } else {
+        orphanDirs.push(relPath);
+      }
     }
   }
-  return results;
+
+  return { gitDirs, orphanDirs };
 }
 
 async function readModuleDirRemoteUrl(abs: string): Promise<string | undefined> {
@@ -104,13 +129,42 @@ async function readModuleDirRemoteUrl(abs: string): Promise<string | undefined> 
   return match?.[1].trim();
 }
 
+async function spawnGitInDir(args: string[], cwd: string): Promise<string | { error: string }> {
+  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  const [code, out, err] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return code === 0 ? out.trim() : { error: err.trim().split("\n")[0] };
+}
+
 async function readWorkingTreeEntry(repoRoot: string, subPath: string): Promise<WorkingTreeGitEntry> {
-  const dotGit = join(repoRoot, subPath, ".git");
-  if (!existsSync(dotGit)) return { path: subPath, type: "missing" };
-  if (statSync(dotGit).isDirectory()) return { path: subPath, type: "dir" };
-  const content = await readFile(dotGit, "utf8");
-  const match = content.match(/^gitdir:\s*(.+)$/m);
-  return { path: subPath, type: "file", gitdirTarget: match?.[1].trim() };
+  const workingTreeAbs = join(repoRoot, subPath);
+  const dotGit = join(workingTreeAbs, ".git");
+
+  let type: "file" | "dir" | "missing";
+  let gitdirTarget: string | undefined;
+
+  if (!existsSync(dotGit)) {
+    type = "missing";
+  } else if (statSync(dotGit).isDirectory()) {
+    type = "dir";
+  } else {
+    type = "file";
+    const content = await readFile(dotGit, "utf8");
+    const match = content.match(/^gitdir:\s*(.+)$/m);
+    gitdirTarget = match?.[1].trim();
+  }
+
+  if (!existsSync(workingTreeAbs)) return { path: subPath, type, gitdirTarget };
+
+  const [remote, headCommit] = await Promise.all([
+    spawnGitInDir(["remote", "get-url", "origin"], workingTreeAbs),
+    spawnGitInDir(["rev-parse", "HEAD"], workingTreeAbs),
+  ]);
+
+  return { path: subPath, type, gitdirTarget, remote, headCommit };
 }
 
 // --- main reader ---
@@ -128,8 +182,9 @@ export async function readGitState(repoRoot: string, extraPaths: string[] = []):
   const config = parseGitConfig(configContent);
   const index = parseIndexGitlinks(lsOutput);
 
+  const modulePaths = new Set(extraPaths);
   const modulesRoot = resolve(gitDir, "modules");
-  const moduleDirPaths = findGitDirs(modulesRoot);
+  const { gitDirs: moduleDirPaths, orphanDirs: orphanModuleDirs } = scanModuleDirs(modulesRoot, modulePaths);
   const moduleDirs = await Promise.all(
     moduleDirPaths.map(async (rel) => ({
       relativePath: rel,
@@ -148,5 +203,5 @@ export async function readGitState(repoRoot: string, extraPaths: string[] = []):
     allPaths.map((p) => readWorkingTreeEntry(repoRoot, p))
   );
 
-  return { config, moduleDirs, index, workingTree };
+  return { config, moduleDirs, orphanModuleDirs, index, workingTree };
 }

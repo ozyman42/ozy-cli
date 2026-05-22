@@ -1,13 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile, writeFile, rename, mkdir, rm } from "node:fs/promises";
 import { resolve, join, dirname, relative } from "node:path";
 import type { Gitmodules } from "./gitmodules";
-import type { ModuleDirInfo } from "../../../../../sync-submodules/git-state";
+import type { ModuleDirInfo, IndexGitlink } from "./git-state";
 
-/**
- * Removes [submodule "X"] stanzas from .git/config where X is not a known
- * submodule name, or is a duplicate. Returns names of removed stanzas.
- */
+export interface Fix {
+  location: string[];
+  action: "synced" | "deleted";
+  detail?: string;
+}
+
 function removeExtraConfigSubmodules(content: string, validNames: Set<string>): { result: string; removed: string[] } {
   const removed: string[] = [];
   const seen = new Set<string>();
@@ -28,124 +30,143 @@ function removeExtraConfigSubmodules(content: string, validNames: Set<string>): 
     } else if (/^\[/.test(line)) {
       dropping = false;
     }
-
     if (!dropping) output.push(line);
   }
 
   return { result: output.join("\n"), removed };
 }
 
-/** Extracts the org/repo path portion of an SSH or HTTPS git URL. */
-function repoPath(url: string): string {
-  const stripped = url.replace(/\.git$/, "");
-  if (stripped.startsWith("http")) {
-    const parts = stripped.split("/");
-    return parts.slice(-2).join("/");
-  }
-  const colonIdx = stripped.indexOf(":");
-  return colonIdx >= 0 ? stripped.slice(colonIdx + 1) : stripped;
-}
-
 async function spawnGit(args: string[], cwd: string): Promise<void> {
-  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "inherit", stderr: "inherit" });
+  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   const code = await proc.exited;
-  if (code !== 0) throw new Error(`git ${args.join(" ")} exited with code ${code}`);
+  if (code !== 0) {
+    const err = await new Response(proc.stderr).text();
+    throw new Error(`git ${args.join(" ")} exited with code ${code}\n${err.trim()}`);
+  }
 }
 
-export async function fixModuleDirs(repoRoot: string, modules: Gitmodules, moduleDirs: ModuleDirInfo[]): Promise<void> {
+export async function fixGitConfig(repoRoot: string, modules: Gitmodules): Promise<Fix[]> {
+  const configPath = resolve(repoRoot, ".git", "config");
+  const content = await readFile(configPath, "utf8");
+  const validNames = new Set(modules.map((m) => m.name));
+  const { result: afterRemoval, removed } = removeExtraConfigSubmodules(content, validNames);
+
+  const existingNames = new Set<string>(
+    [...afterRemoval.matchAll(/^\[submodule "(.+)"\]$/gm)].map((m) => m[1])
+  );
+  const missing = modules.filter((m) => !existingNames.has(m.name));
+
+  let result = afterRemoval;
+  for (const m of missing) {
+    if (!result.endsWith("\n")) result += "\n";
+    result += `[submodule "${m.name}"]\n\tactive = true\n\turl = ${m.url}\n\tpath = ${m.path}\n`;
+  }
+
+  if (removed.length === 0 && missing.length === 0) return [];
+  await writeFile(configPath, result, "utf8");
+  return [
+    ...removed.map((name) => ({ location: [".git", "config", name], action: "deleted" as const })),
+    ...missing.map((m) => ({ location: [".git", "config", m.name], action: "synced" as const })),
+  ];
+}
+
+export async function fixModuleDirs(repoRoot: string, modules: Gitmodules, moduleDirs: ModuleDirInfo[], orphanModuleDirs: string[]): Promise<Fix[]> {
+  const fixes: Fix[] = [];
   const modulesRoot = resolve(repoRoot, ".git", "modules");
-  const gmByRepoPath = new Map(modules.map((m) => [repoPath(m.url), m]));
+  const gmByPath = new Map(modules.map((m) => [m.path, m]));
 
   for (const d of moduleDirs) {
-    const prefix = `  .git/modules/${d.relativePath}`;
-
-    if (!d.remoteUrl) {
-      console.log(`${prefix}: no remote URL, skipping`);
-      continue;
-    }
-
-    const gm = gmByRepoPath.get(repoPath(d.remoteUrl));
-
+    const gm = gmByPath.get(d.relativePath);
     if (!gm) {
       await rm(join(modulesRoot, d.relativePath), { recursive: true, force: true });
-      console.log(`${prefix}: deleted (orphaned, no matching submodule)`);
-      continue;
+      fixes.push({ location: [".git", "modules", ...d.relativePath.split("/")], action: "deleted" });
     }
-
-    if (d.relativePath === gm.path) {
-      console.log(`${prefix}: already correct`);
-      continue;
-    }
-
-    const targetAbs = join(modulesRoot, gm.path);
-    if (existsSync(targetAbs)) {
-      console.log(`${prefix}: target ${gm.path} already exists, skipping`);
-      continue;
-    }
-
-    await mkdir(dirname(targetAbs), { recursive: true });
-    await rename(join(modulesRoot, d.relativePath), targetAbs);
-    console.log(`${prefix} → ${gm.path}`);
   }
 
-  // Write .git redirect files so git recognises existing working trees
+  for (const rel of orphanModuleDirs) {
+    await rm(join(modulesRoot, rel), { recursive: true, force: true });
+    fixes.push({ location: [".git", "modules", ...rel.split("/")], action: "deleted" });
+  }
+
   for (const m of modules) {
     const workingTreeDir = resolve(repoRoot, m.path);
     const moduleGitDir = join(modulesRoot, m.path);
     const dotGit = join(workingTreeDir, ".git");
-    if (!existsSync(workingTreeDir) || !existsSync(moduleGitDir) || existsSync(dotGit)) continue;
+    if (!existsSync(workingTreeDir)) continue;
+
+    if (existsSync(dotGit) && statSync(dotGit).isDirectory()) {
+      if (existsSync(moduleGitDir)) continue;
+      await mkdir(dirname(moduleGitDir), { recursive: true });
+      await rename(dotGit, moduleGitDir);
+      const rel = relative(workingTreeDir, moduleGitDir);
+      await writeFile(dotGit, `gitdir: ${rel}\n`, "utf8");
+      fixes.push({ location: [...m.path.split("/"), ".git"], action: "synced", detail: "migrated standalone .git" });
+      continue;
+    }
+
+    if (!existsSync(moduleGitDir)) {
+      await mkdir(dirname(moduleGitDir), { recursive: true });
+      await spawnGit(["clone", "--bare", m.url, moduleGitDir], repoRoot);
+      const configFile = `.git/modules/${m.path}/config`;
+      const worktree = relative(moduleGitDir, workingTreeDir);
+      await spawnGit(["config", "-f", configFile, "core.bare", "false"], repoRoot);
+      await spawnGit(["config", "-f", configFile, "core.worktree", worktree], repoRoot);
+      fixes.push({ location: [".git", "modules", ...m.path.split("/")], action: "synced", detail: "initialized" });
+      continue;
+    }
+
+    if (existsSync(dotGit)) continue;
     const rel = relative(workingTreeDir, moduleGitDir);
     await writeFile(dotGit, `gitdir: ${rel}\n`, "utf8");
-    console.log(`  wrote ${m.path}/.git → ${rel}`);
+    fixes.push({ location: [...m.path.split("/"), ".git"], action: "synced" });
   }
 
-  console.log("  running: git submodule sync");
-  await spawnGit(["submodule", "sync"], repoRoot);
-
-  // Set core.worktree in each module git dir so git knows where the working tree is
   for (const m of modules) {
     const moduleGitDir = join(modulesRoot, m.path);
     if (!existsSync(moduleGitDir)) continue;
+    const configFile = `.git/modules/${m.path}/config`;
+
+    const readConfig = (key: string) =>
+      Bun.spawn(["git", "config", "-f", configFile, key], { cwd: repoRoot, stdout: "pipe", stderr: "pipe" });
+
+    const [currentUrl, currentWorktree] = await Promise.all([
+      new Response(readConfig("remote.origin.url").stdout).text().then(t => t.trim()),
+      new Response(readConfig("core.worktree").stdout).text().then(t => t.trim()),
+    ]);
+
     const worktree = relative(moduleGitDir, resolve(repoRoot, m.path));
-    await spawnGit(["config", "-f", `.git/modules/${m.path}/config`, "core.worktree", worktree], repoRoot);
-    console.log(`  set core.worktree for ${m.path}: ${worktree}`);
+
+    if (currentUrl !== m.url) {
+      await spawnGit(["config", "-f", configFile, "remote.origin.url", m.url], repoRoot);
+      fixes.push({ location: [".git", "modules", ...m.path.split("/"), "config"], action: "synced", detail: "remote.origin.url" });
+    }
+    if (currentWorktree !== worktree) {
+      await spawnGit(["config", "-f", configFile, "core.worktree", worktree], repoRoot);
+      fixes.push({ location: [".git", "modules", ...m.path.split("/"), "config"], action: "synced", detail: "core.worktree" });
+    }
   }
+
+  return fixes;
 }
 
-export async function fixIndexGitlinks(repoRoot: string, modules: Gitmodules): Promise<void> {
+export async function fixIndexGitlinks(repoRoot: string, modules: Gitmodules, currentIndex: IndexGitlink[]): Promise<Fix[]> {
+  const currentShas = new Map(currentIndex.map((e) => [e.path, e.commit]));
+  const fixes: Fix[] = [];
+
   for (const m of modules) {
     const workingTree = resolve(repoRoot, m.path);
-    if (!existsSync(workingTree)) {
-      console.log(`  ${m.path}: working tree missing, skipping`);
-      continue;
-    }
+    if (!existsSync(workingTree)) continue;
 
-    const shaProc = Bun.spawn(["git", "rev-parse", "HEAD"], { cwd: workingTree, stdout: "pipe" });
+    const shaProc = Bun.spawn(["git", "rev-parse", "HEAD"], { cwd: workingTree, stdout: "pipe", stderr: "pipe" });
     const sha = (await new Response(shaProc.stdout).text()).trim();
-    if (!/^[0-9a-f]{40}$/.test(sha)) {
-      console.log(`  ${m.path}: could not read HEAD (${sha}), skipping`);
-      continue;
+    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
+
+    const current = currentShas.get(m.path);
+    await spawnGit(["update-index", "--add", "--cacheinfo", `160000,${sha},${m.path}`], repoRoot);
+    if (current !== sha) {
+      fixes.push({ location: [".git", "index"], action: "synced", detail: `${m.path}: ${sha.slice(0, 8)}` });
     }
-
-    await spawnGit(["update-index", "--cacheinfo", `160000,${sha},${m.path}`], repoRoot);
-    console.log(`  ${m.path}: ${sha.slice(0, 8)}`);
-  }
-}
-
-export async function fixGitConfig(repoRoot: string, modules: Gitmodules): Promise<void> {
-  const configPath = resolve(repoRoot, ".git", "config");
-  const content = await readFile(configPath, "utf8");
-  const validNames = new Set(modules.map((m) => m.name));
-
-  const { result, removed } = removeExtraConfigSubmodules(content, validNames);
-
-  if (removed.length === 0) {
-    console.log("  .git/config: no extra submodule entries");
-    return;
   }
 
-  await writeFile(configPath, result, "utf8");
-  for (const name of removed) {
-    console.log(`  .git/config: removed [submodule "${name}"]`);
-  }
+  return fixes;
 }

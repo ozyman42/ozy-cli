@@ -1,64 +1,14 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { parse, validate, serialize, sorted, type Gitmodules } from "./gitmodules";
-import { readGitState, type GitState } from "./git-state";
+import { parse, validate, serialize, sorted } from "./gitmodules";
+import { readGitState } from "./git-state";
 import { fixGitConfig, fixModuleDirs, fixIndexGitlinks } from "./fix";
-import {
-  PrintableItem, GhostItem,
-  GitmodulesEntryItem, GitConfigEntryItem, ModuleDirItem, IndexGitlinkItem, WorkingTreeItem,
-} from "./printer";
+import { printSyncState, printFixes } from "./printer";
 import { makeCommand } from "../../../common/command";
 import { Ok } from '../../../common/result';
 
 const REPO_ROOT = process.cwd();
 const GITMODULES_PATH = resolve(REPO_ROOT, ".gitmodules");
-
-function buildSections(modules: Gitmodules, state: GitState) {
-  const byName = new Map(modules.map((m) => [m.name, m]));
-  const byPath = new Map(modules.map((m) => [m.path, m]));
-
-  // .gitmodules
-  const gitmodulesItems = modules.map((m) => new GitmodulesEntryItem(m));
-
-  // .git/config
-  const seenConfigNames = new Set<string>();
-  const configItems: PrintableItem[] = state.config.map((e) => {
-    const isDuplicate = seenConfigNames.has(e.name);
-    seenConfigNames.add(e.name);
-    return new GitConfigEntryItem(e, byName.get(e.name), isDuplicate);
-  });
-  for (const m of modules) {
-    if (!seenConfigNames.has(m.name))
-      configItems.push(new GhostItem(`[${m.name}]`, "missing from .git/config"));
-  }
-
-  // .git/modules/
-  const seenModulePaths = new Set<string>();
-  const moduleDirItems: PrintableItem[] = state.moduleDirs.map((d) => {
-    seenModulePaths.add(d.relativePath);
-    return new ModuleDirItem(d, byPath.get(d.relativePath));
-  });
-  for (const m of modules) {
-    if (!seenModulePaths.has(m.path))
-      moduleDirItems.push(new GhostItem(m.path, "missing from .git/modules/"));
-  }
-
-  // index
-  const seenIndexPaths = new Set<string>();
-  const indexItems: PrintableItem[] = state.index.map((e) => {
-    seenIndexPaths.add(e.path);
-    return new IndexGitlinkItem(e, byPath.has(e.path));
-  });
-  for (const m of modules) {
-    if (!seenIndexPaths.has(m.path))
-      indexItems.push(new GhostItem(m.path, "missing from index"));
-  }
-
-  // working tree
-  const workingTreeItems = state.workingTree.map((e) => new WorkingTreeItem(e));
-
-  return { gitmodulesItems, configItems, moduleDirItems, indexItems, workingTreeItems };
-}
 
 async function main() {
   const content = await readFile(GITMODULES_PATH, "utf8");
@@ -73,21 +23,15 @@ async function main() {
 
   const submodulePaths = modules.map((m) => m.path);
 
-  console.log("=== fixing ===");
-  await fixGitConfig(REPO_ROOT, modules);
-  const preFixState = await readGitState(REPO_ROOT, submodulePaths);
-  await fixModuleDirs(REPO_ROOT, modules, preFixState.moduleDirs);
-  await fixIndexGitlinks(REPO_ROOT, modules);
-
   const state = await readGitState(REPO_ROOT, submodulePaths);
-  const { gitmodulesItems, configItems, moduleDirItems, indexItems, workingTreeItems } = buildSections(modules, state);
+  printSyncState(modules, state);
 
-  console.log("=== .gitmodules ===");
-  for (const item of gitmodulesItems) item.print();
-  PrintableItem.printGroup(".git/config submodule entries", configItems);
-  PrintableItem.printGroup(".git/modules/ git dirs", moduleDirItems);
-  PrintableItem.printGroup("index gitlinks", indexItems);
-  PrintableItem.printGroup("working tree .git entries", workingTreeItems);
+  const appliedFixes = [
+    ...await fixGitConfig(REPO_ROOT, modules),
+    ...await fixModuleDirs(REPO_ROOT, modules, state.moduleDirs, state.orphanModuleDirs),
+    ...await fixIndexGitlinks(REPO_ROOT, modules, state.index),
+  ];
+  printFixes(appliedFixes);
 
   const result = serialize(sorted(modules));
   if (result !== content) {
