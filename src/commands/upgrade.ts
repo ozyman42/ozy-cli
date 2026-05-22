@@ -43,11 +43,11 @@ function detectInstall(binaryPath: string): InstallInfo | undefined {
 function buildUpgradeCommand(info: InstallInfo): string[] {
   const pkg = "@ozyman42/ozy-cli@latest";
   if (info.scope === "global") {
-    if (info.pm === "bun") return ["bun", "add", "-g", pkg];
+    if (info.pm === "bun") return ["bun", "add", "--no-cache", "-g", pkg];
     if (info.pm === "pnpm") return ["pnpm", "add", "-g", pkg];
     return ["npm", "install", "-g", pkg];
   }
-  if (info.pm === "bun") return ["bun", "add", pkg];
+  if (info.pm === "bun") return ["bun", "add", "--no-cache", pkg];
   if (info.pm === "pnpm") return ["pnpm", "add", pkg];
   return ["npm", "install", pkg];
 }
