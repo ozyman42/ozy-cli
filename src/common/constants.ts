@@ -1,0 +1,17 @@
+import * as path from "node:path";
+import { bin, version } from "../../package.json";
+//import { log } from "./log";
+
+export const FUTURE_TOOL_NAME = "jive";
+const CLI_DIR = path.dirname(process.execPath);
+export const CLI_CMD_NAME = "ozy" satisfies keyof typeof bin;
+export const AGENT_CMD_NAME = "ozy-signing-agent" satisfies keyof typeof bin;
+export const AGENT_CMD_PATH = path.resolve(CLI_DIR, AGENT_CMD_NAME);
+export const AGENT_PORT = 47473;
+export const CLI_CMD_PATH = path.resolve(CLI_DIR, CLI_CMD_NAME);
+export const AGENT_SOCK_FILE_PATH = path.resolve(CLI_DIR, `${AGENT_CMD_NAME}.sock`);
+export const AGENT_LOG_FILE_PATH = path.resolve(CLI_DIR, `${AGENT_CMD_NAME}.log`);
+export const AGENT_PID_FILE_PATH = path.resolve(CLI_DIR, `${AGENT_CMD_NAME}.pid`);
+export const AGENT_KEY_MAP_PATH = path.resolve(CLI_DIR, `${AGENT_CMD_NAME}-pubkey-map.json`);
+export const CURRENT_VERSION = version;
+export const TEMP_PUBKEY_PATH = path.resolve(CLI_DIR, `${AGENT_CMD_NAME}-temp.pub`);

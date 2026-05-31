@@ -1,6 +1,7 @@
 import { $ } from 'bun';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { Effect, Option } from 'effect';
 import { log } from '../../../common/log';
 
 const npmrcPath = `${homedir()}/.npmrc`;
@@ -20,35 +21,38 @@ function stripTokenFromDisk(): void {
   }
 }
 
-async function whoamiWithToken(token: string): Promise<string | null> {
+async function whoamiWithToken(token: string): Promise<Option.Option<string>> {
   const result = await $`npm whoami`
     .env({ ...process.env, NODE_AUTH_TOKEN: token })
     .quiet().nothrow();
-  if (result.exitCode !== 0) return null;
-  return result.stdout.toString().trim();
+  if (result.exitCode !== 0) return Option.none();
+  return Option.some(result.stdout.toString().trim());
 }
 
-export async function acquireToken(): Promise<{ token: string; user: string }> {
-  // If there's already a token on disk, use it and immediately clear it.
-  const existing = readNpmrc().match(TOKEN_RE)?.[1];
-  if (existing) {
-    const user = await whoamiWithToken(existing);
-    if (user) {
+export function acquireToken(): Effect.Effect<{ token: string; user: string }, string> {
+  return Effect.tryPromise({
+    try: async () => {
+      const existing = readNpmrc().match(TOKEN_RE)?.[1];
+      if (existing) {
+        const userOption = await whoamiWithToken(existing);
+        if (Option.isSome(userOption)) {
+          stripTokenFromDisk();
+          return { token: existing, user: userOption.value };
+        }
+      }
+
+      log('  not logged in — opening npm login...');
+      await $`npm login`.nothrow();
+
+      const token = readNpmrc().match(TOKEN_RE)?.[1];
+      if (!token) throw new Error('npm login did not produce a token — try running "npm login" manually');
+
+      const userOption = await whoamiWithToken(token);
+      if (Option.isNone(userOption)) throw new Error('npm login succeeded but token verification failed');
+
       stripTokenFromDisk();
-      return { token: existing, user };
-    }
-  }
-
-  // No valid token — open browser login. npm writes the result to ~/.npmrc.
-  log('  not logged in — opening npm login...');
-  await $`npm login`.nothrow();
-
-  const token = readNpmrc().match(TOKEN_RE)?.[1];
-  if (!token) throw new Error('npm login did not produce a token — try running "npm login" manually');
-
-  const user = await whoamiWithToken(token);
-  if (!user) throw new Error('npm login succeeded but token verification failed');
-
-  stripTokenFromDisk();
-  return { token, user };
+      return { token, user: userOption.value };
+    },
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
 }

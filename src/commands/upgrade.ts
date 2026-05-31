@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { Effect, Option } from "effect";
 import { makeCommand } from "../common/command";
-import { Ok, Err } from "../common/result";
 
 type PackageManager = "bun" | "pnpm" | "npm";
 type InstallScope = "global" | "local";
@@ -12,32 +12,32 @@ interface InstallInfo {
   cwd?: string;
 }
 
-function findLockFile(dir: string): PackageManager | undefined {
+function findLockFile(dir: string): Option.Option<PackageManager> {
   let current = dir;
   while (true) {
-    if (existsSync(join(current, "bun.lock")) || existsSync(join(current, "bun.lockb"))) return "bun";
-    if (existsSync(join(current, "pnpm-lock.yaml"))) return "pnpm";
-    if (existsSync(join(current, "package-lock.json"))) return "npm";
+    if (existsSync(join(current, "bun.lock")) || existsSync(join(current, "bun.lockb"))) return Option.some("bun" as PackageManager);
+    if (existsSync(join(current, "pnpm-lock.yaml"))) return Option.some("pnpm" as PackageManager);
+    if (existsSync(join(current, "package-lock.json"))) return Option.some("npm" as PackageManager);
     const parent = dirname(current);
-    if (parent === current) return undefined;
+    if (parent === current) return Option.none();
     current = parent;
   }
 }
 
-function detectInstall(binaryPath: string): InstallInfo | undefined {
+function detectInstall(binaryPath: string): Option.Option<InstallInfo> {
   if (binaryPath.includes("/.bun/bin/")) {
-    return { pm: "bun", scope: "global" };
+    return Option.some({ pm: "bun", scope: "global" } as InstallInfo);
   }
   if (binaryPath.includes("/pnpm/")) {
-    return { pm: "pnpm", scope: "global" };
+    return Option.some({ pm: "pnpm", scope: "global" } as InstallInfo);
   }
   const localMatch = binaryPath.match(/^(.+\/node_modules)\/.bin\//);
   if (localMatch) {
-    const projectRoot = dirname(localMatch[1]);
-    const pm = findLockFile(projectRoot) ?? "npm";
-    return { pm, scope: "local", cwd: projectRoot };
+    const projectRoot = dirname(localMatch[1]!);
+    const pm = Option.getOrElse(findLockFile(projectRoot), () => "npm" as PackageManager);
+    return Option.some({ pm, scope: "local", cwd: projectRoot } as InstallInfo);
   }
-  return undefined;
+  return Option.none();
 }
 
 function buildUpgradeCommand(info: InstallInfo): string[] {
@@ -52,40 +52,38 @@ function buildUpgradeCommand(info: InstallInfo): string[] {
   return ["npm", "install", pkg];
 }
 
-async function whichOzy(): Promise<string | undefined> {
-  const proc = Bun.spawn(["which", "ozy"], { stdout: "pipe", stderr: "pipe" });
-  const code = await proc.exited;
-  if (code !== 0) return undefined;
-  return (await new Response(proc.stdout).text()).trim();
+function whichOzy(): Effect.Effect<string, string> {
+  return Effect.tryPromise({
+    try: async () => {
+      const proc = Bun.spawn(["which", "ozy"], { stdout: "pipe", stderr: "pipe" });
+      const code = await proc.exited;
+      if (code !== 0) throw new Error("ozy binary not found — install with: bun add -g @ozyman42/ozy-cli");
+      return (await new Response(proc.stdout).text()).trim();
+    },
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
 }
 
-export const upgrade = makeCommand("upgrade", "upgrade ozy-cli to the latest version", async () => {
-  const binaryPath = await whichOzy();
-  if (!binaryPath) {
-    return Err("not-installed", "ozy binary not found — install with: bun add -g @ozyman42/ozy-cli");
-  }
+export const upgrade = makeCommand("upgrade", "upgrade ozy-cli to the latest version", () =>
+  Effect.gen(function* () {
+    const binaryPath = yield* whichOzy();
 
-  const info = detectInstall(binaryPath);
-  if (!info) {
-    return Err(
-      "unknown-install",
-      `could not detect package manager from binary path: ${binaryPath}\nUpgrade manually with your package manager.`
-    );
-  }
+    const infoOption = detectInstall(binaryPath);
+    if (Option.isNone(infoOption))
+      return yield* Effect.fail(`unknown-install: could not detect package manager from binary path: ${binaryPath}\nUpgrade manually with your package manager.`);
+    const info = infoOption.value;
 
-  const cmd = buildUpgradeCommand(info);
-  console.log(`Detected: ${info.pm} (${info.scope})`);
-  console.log(`Running: ${cmd.join(" ")}`);
+    const cmd = buildUpgradeCommand(info);
+    console.log(`Detected: ${info.pm} (${info.scope})`);
+    console.log(`Running: ${cmd.join(" ")}`);
 
-  const proc = Bun.spawn(cmd, {
-    cwd: info.cwd ?? process.cwd(),
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const code = await proc.exited;
-  if (code !== 0) {
-    return Err("install-failed", `${cmd[0]} exited with code ${code}`);
-  }
-
-  return Ok(true);
-});
+    const proc = Bun.spawn(cmd, {
+      cwd: info.cwd ?? process.cwd(),
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const code = yield* Effect.promise(() => proc.exited);
+    if (code !== 0)
+      yield* Effect.fail(`install-failed: ${cmd[0]} exited with code ${code}`);
+  })
+);

@@ -1,5 +1,6 @@
 import { $ } from 'bun';
 import { createInterface } from 'node:readline';
+import { Effect } from 'effect';
 import { log } from '../../../common/log';
 
 function encodePackageName(name: string): string {
@@ -18,9 +19,6 @@ function promptPasscode(): Promise<string> {
   });
 }
 
-// Returns the OTP that was used (if any), so callers can reuse it for subsequent requests.
-// Returns the OTP used (if any) so callers can reuse it for the next request.
-// alreadyExists: treat this status code as "already configured" rather than an error.
 async function registryPost(
   url: string,
   body: string,
@@ -44,7 +42,6 @@ async function registryPost(
     return false;
   };
 
-  // Try with a pre-existing OTP first to avoid an unnecessary browser flow.
   if (existingOtp) {
     const res = await post(existingOtp);
     if (check(res)) return { otp: existingOtp, alreadyExists: !res.ok };
@@ -66,12 +63,12 @@ async function registryPost(
   throw new Error(`${res.status} ${await res.text()}`);
 }
 
-export async function addTrustedPublisher(
+export function addTrustedPublisher(
   name: string,
   ownerRepo: string,
   token: string,
   environment = 'prod',
-): Promise<{ alreadyConfigured: boolean; otp?: string }> {
+): Effect.Effect<{ alreadyConfigured: boolean; otp?: string }, string> {
   const encoded = encodePackageName(name);
   log('  setting up (may require 2FA)...');
   const body = JSON.stringify([{
@@ -79,26 +76,32 @@ export async function addTrustedPublisher(
     claims: { repository: ownerRepo, workflow_ref: { file: 'publish.yml' }, environment },
     permissions: ['createPackage'],
   }]);
-  try {
-    const { otp, alreadyExists } = await registryPost(
-      `https://registry.npmjs.org/-/package/${encoded}/trust`, body, token,
-      { alreadyExistsStatus: 409 },
-    );
-    return { alreadyConfigured: alreadyExists, otp };
-  } catch (e: any) {
-    throw new Error(`trust setup failed: ${e.message}`);
-  }
+  return Effect.tryPromise({
+    try: async () => {
+      const { otp, alreadyExists } = await registryPost(
+        `https://registry.npmjs.org/-/package/${encoded}/trust`, body, token,
+        { alreadyExistsStatus: 409 },
+      );
+      return { alreadyConfigured: alreadyExists, otp };
+    },
+    catch: (e) => `trust setup failed: ${e instanceof Error ? e.message : String(e)}`,
+  });
 }
 
-export async function setPackageAccessPolicy(name: string, token: string, existingOtp?: string): Promise<void> {
+export function setPackageAccessPolicy(
+  name: string,
+  token: string,
+  existingOtp?: string,
+): Effect.Effect<void, string> {
   const encoded = encodePackageName(name);
   const body = JSON.stringify({ publish_requires_tfa: true, automation_token_overrides_tfa: false });
-  try {
-    await registryPost(
-      `https://registry.npmjs.org/-/package/${encoded}/access`, body, token,
-      { existingOtp },
-    );
-  } catch (e: any) {
-    throw new Error(`access policy setup failed: ${e.message}`);
-  }
+  return Effect.tryPromise({
+    try: async () => {
+      await registryPost(
+        `https://registry.npmjs.org/-/package/${encoded}/access`, body, token,
+        { existingOtp },
+      );
+    },
+    catch: (e) => `access policy setup failed: ${e instanceof Error ? e.message : String(e)}`,
+  });
 }

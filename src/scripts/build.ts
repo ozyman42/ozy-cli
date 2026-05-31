@@ -1,21 +1,30 @@
-import { rmSync } from "node:fs";
+import { rmSync, readdirSync } from "node:fs";
+import { basename, join } from "node:path";
 
 rmSync("dist", { recursive: true, force: true });
 
-const result = await Bun.build({
-  entrypoints: ["src/index.ts"],
-  outdir: "dist",
-  target: "bun",
-});
+const SUFFIX = ".ts";
+const OUTDIR = "dist";
 
-if (!result.success) {
-  for (const log of result.logs) console.error(log);
-  process.exit(1);
+const entrypoints = readdirSync("src/entrypoints")
+  .filter(f => f.endsWith(SUFFIX))
+  .map(f => `src/entrypoints/${f}`);
+
+const longestEntry = Math.max(...entrypoints.map(entry => entry.length));
+
+for (const entrypoint of entrypoints) {
+  const result = await Bun.build({
+    entrypoints: [entrypoint],
+    outdir: OUTDIR,
+    compile: true
+  });
+  const inFile = entrypoint;
+  const baseName = basename(inFile);
+  const outFile = join(OUTDIR, baseName.slice(0, baseName.length - SUFFIX.length));
+
+  if (!result.success) {
+    for (const log of result.logs) console.error(log);
+    process.exit(1);
+  }
+  console.log(`${inFile.padStart(longestEntry, " ")} -> ${outFile}`);
 }
-
-const outPath = "dist/index.js";
-const content = await Bun.file(outPath).text();
-await Bun.write(outPath, `#!/usr/bin/env bun\n${content}`);
-Bun.spawnSync(["chmod", "+x", outPath]);
-
-console.log("Built dist/index.js");

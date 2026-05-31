@@ -1,11 +1,11 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { Effect, Result } from "effect";
 import { parse, validate, serialize, sorted } from "./gitmodules";
 import { readGitState } from "./git-state";
-import { fixGitConfig, fixModuleDirs, fixIndexGitlinks } from "./fix";
+import { fixGitConfig, fixModuleDirs, fixIndexGitlinks, type Fix } from "./fix";
 import { printSyncState, printFixes } from "./printer";
 import { makeCommand } from "../../../common/command";
-import { Ok } from '../../../common/result';
 
 const REPO_ROOT = process.cwd();
 const GITMODULES_PATH = resolve(REPO_ROOT, ".gitmodules");
@@ -23,14 +23,28 @@ async function main() {
 
   const submodulePaths = modules.map((m) => m.path);
 
-  const state = await readGitState(REPO_ROOT, submodulePaths);
+  const stateResult = await Effect.runPromise(readGitState(REPO_ROOT, submodulePaths).pipe(Effect.result));
+  if (Result.isFailure(stateResult)) {
+    console.error(`Error reading git state: ${stateResult.failure}`);
+    process.exit(1);
+  }
+  const state = stateResult.success;
   printSyncState(modules, state);
 
-  const appliedFixes = [
-    ...await fixGitConfig(REPO_ROOT, modules),
-    ...await fixModuleDirs(REPO_ROOT, modules, state.moduleDirs, state.orphanModuleDirs),
-    ...await fixIndexGitlinks(REPO_ROOT, modules, state.index),
-  ];
+  const fixResults = await Promise.all([
+    Effect.runPromise(fixGitConfig(REPO_ROOT, modules).pipe(Effect.result)),
+    Effect.runPromise(fixModuleDirs(REPO_ROOT, modules, state.moduleDirs, state.orphanModuleDirs).pipe(Effect.result)),
+    Effect.runPromise(fixIndexGitlinks(REPO_ROOT, modules, state.index).pipe(Effect.result)),
+  ]);
+
+  const appliedFixes: Fix[] = [];
+  for (const r of fixResults) {
+    if (Result.isFailure(r)) {
+      console.error(`Error applying fixes: ${r.failure}`);
+      process.exit(1);
+    }
+    appliedFixes.push(...r.success);
+  }
   printFixes(appliedFixes);
 
   const result = serialize(sorted(modules));
@@ -40,7 +54,9 @@ async function main() {
   }
 }
 
-export const syncSubmodules = makeCommand('sync-submodules', 'sync submodules according to .gitmodules', async () => {
-  await main();
-  return Ok(true);
-});
+export const syncSubmodules = makeCommand('sync-submodules', 'sync submodules according to .gitmodules', () =>
+  Effect.tryPromise({
+    try: async () => { await main(); },
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  })
+);
