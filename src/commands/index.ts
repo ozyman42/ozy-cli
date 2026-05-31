@@ -1,12 +1,13 @@
-import { version } from "../../package.json";
 import { program } from 'commander';
 import { git } from './git';
 import { npm } from './npm';
 import { upgrade } from './upgrade';
+import { ssh } from "./ssh";
+import { CLI_CMD_NAME, CURRENT_VERSION } from '@/common/constants';
 
-program.name('ozy').version(version);
+program.name(CLI_CMD_NAME).version(CURRENT_VERSION);
 
-[git, npm, upgrade]
+[git, npm, ssh, upgrade]
   .forEach(cmd => { program.addCommand(cmd) });
 
 program.parse();

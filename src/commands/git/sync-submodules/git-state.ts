@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
+import { Effect, Option } from "effect";
 
 // --- types ---
 
@@ -66,9 +67,9 @@ function parseGitConfig(content: string): GitConfigSubmodule[] {
     const kvMatch = line.match(/^\s+(\w+)\s*=\s*(.+)$/);
     if (!kvMatch) continue;
     const [, key, value] = kvMatch;
-    if (key === "url") current.url = value.trim();
-    else if (key === "path") current.path = value.trim();
-    else if (key === "active") current.active = value.trim() === "true";
+    if (key === "url") current.url = value!.trim();
+    else if (key === "path") current.path = value!.trim();
+    else if (key === "active") current.active = value!.trim() === "true";
   }
   if (current?.name) entries.push(current as GitConfigSubmodule);
   return entries;
@@ -81,7 +82,7 @@ function parseIndexGitlinks(output: string): IndexGitlink[] {
     .map((line) => {
       const match = line.match(/^160000 ([0-9a-f]{40}) \d\t(.+)$/);
       if (!match) throw new Error(`Unexpected ls-files line: ${line}`);
-      return { commit: match[1], path: match[2] };
+      return { commit: match[1]!, path: match[2]! };
     });
 }
 
@@ -121,12 +122,12 @@ function scanModuleDirs(
   return { gitDirs, orphanDirs };
 }
 
-async function readModuleDirRemoteUrl(abs: string): Promise<string | undefined> {
+async function readModuleDirRemoteUrl(abs: string): Promise<Option.Option<string>> {
   const configPath = join(abs, "config");
-  if (!existsSync(configPath)) return undefined;
+  if (!existsSync(configPath)) return Option.none();
   const content = await readFile(configPath, "utf8");
   const match = content.match(/\[remote "origin"\][^\[]*\n\s+url\s*=\s*(.+)/);
-  return match?.[1].trim();
+  return match?.[1] ? Option.some(match[1].trim()) : Option.none();
 }
 
 async function spawnGitInDir(args: string[], cwd: string): Promise<string | { error: string }> {
@@ -136,7 +137,7 @@ async function spawnGitInDir(args: string[], cwd: string): Promise<string | { er
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
-  return code === 0 ? out.trim() : { error: err.trim().split("\n")[0] };
+  return code === 0 ? out.trim() : { error: err.trim().split("\n")[0]! };
 }
 
 async function readWorkingTreeEntry(repoRoot: string, subPath: string): Promise<WorkingTreeGitEntry> {
@@ -169,39 +170,47 @@ async function readWorkingTreeEntry(repoRoot: string, subPath: string): Promise<
 
 // --- main reader ---
 
-export async function readGitState(repoRoot: string, extraPaths: string[] = []): Promise<GitState> {
-  const gitDir = resolve(repoRoot, ".git");
+export function readGitState(repoRoot: string, extraPaths: string[] = []): Effect.Effect<GitState, string> {
+  return Effect.tryPromise({
+    try: async () => {
+      const gitDir = resolve(repoRoot, ".git");
 
-  const [configContent, lsOutput] = await Promise.all([
-    readFile(resolve(gitDir, "config"), "utf8"),
-    new Response(
-      Bun.spawn(["git", "ls-files", "--stage"], { cwd: repoRoot, stdout: "pipe" }).stdout
-    ).text(),
-  ]);
+      const [configContent, lsOutput] = await Promise.all([
+        readFile(resolve(gitDir, "config"), "utf8"),
+        new Response(
+          Bun.spawn(["git", "ls-files", "--stage"], { cwd: repoRoot, stdout: "pipe" }).stdout
+        ).text(),
+      ]);
 
-  const config = parseGitConfig(configContent);
-  const index = parseIndexGitlinks(lsOutput);
+      const config = parseGitConfig(configContent);
+      const index = parseIndexGitlinks(lsOutput);
 
-  const modulePaths = new Set(extraPaths);
-  const modulesRoot = resolve(gitDir, "modules");
-  const { gitDirs: moduleDirPaths, orphanDirs: orphanModuleDirs } = scanModuleDirs(modulesRoot, modulePaths);
-  const moduleDirs = await Promise.all(
-    moduleDirPaths.map(async (rel) => ({
-      relativePath: rel,
-      remoteUrl: await readModuleDirRemoteUrl(join(modulesRoot, rel)),
-    }))
-  );
+      const modulePaths = new Set(extraPaths);
+      const modulesRoot = resolve(gitDir, "modules");
+      const { gitDirs: moduleDirPaths, orphanDirs: orphanModuleDirs } = scanModuleDirs(modulesRoot, modulePaths);
+      const moduleDirs = await Promise.all(
+        moduleDirPaths.map(async (rel) => {
+          const remoteUrlOption = await readModuleDirRemoteUrl(join(modulesRoot, rel));
+          return {
+            relativePath: rel,
+            remoteUrl: Option.isSome(remoteUrlOption) ? remoteUrlOption.value : undefined,
+          };
+        })
+      );
 
-  const allPaths = [
-    ...new Set([
-      ...index.map((e) => e.path),
-      ...config.flatMap((e) => (e.path ? [e.path] : [])),
-      ...extraPaths,
-    ]),
-  ];
-  const workingTree = await Promise.all(
-    allPaths.map((p) => readWorkingTreeEntry(repoRoot, p))
-  );
+      const allPaths = [
+        ...new Set([
+          ...index.map((e) => e.path),
+          ...config.flatMap((e) => (e.path ? [e.path] : [])),
+          ...extraPaths,
+        ]),
+      ];
+      const workingTree = await Promise.all(
+        allPaths.map((p) => readWorkingTreeEntry(repoRoot, p))
+      );
 
-  return { config, moduleDirs, orphanModuleDirs, index, workingTree };
+      return { config, moduleDirs, orphanModuleDirs, index, workingTree };
+    },
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
 }

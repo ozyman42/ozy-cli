@@ -1,20 +1,16 @@
 import { Command } from 'commander';
-import { type Result } from './result';
+import { Effect, Result } from 'effect';
 import { log } from './log';
 
-export function makeCommand<E>(name: string, description: string, 
-  action: () => Promise<Result<true, E>>): Command {
+export function makeCommand(name: string, description: string,
+  action: () => Effect.Effect<void, string>): Command {
   return new Command(name)
     .description(description)
     .action(async () => {
-      try {
-        const result = await action();
-        if (!result.success) {
-          log(`✗ ${result.error}: ${result.reason}`);
-        }
-      } catch (err) {
-        log(`✗ unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+      const result = await Effect.runPromise(action().pipe(Effect.result));
+      if (Result.isFailure(result)) {
+        log(`✗ ${result.failure}`);
       }
       process.exit();
-    })
+    });
 }
