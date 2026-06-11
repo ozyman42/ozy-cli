@@ -1,13 +1,13 @@
 {
   "name": "@ozyman42/ozy-cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Ozymandias' personal tools",
   "type": "module",
   "bin": {
-    "ozy": "dist/entrypoints/ozy.js",
-    "ozy-signing-agent": "dist/entrypoints/ozy-signing-agent.js",
-    "ozy-virtual-security-key": "dist/entrypoints/ozy-virtual-security-key.js",
-    "ozy-ssh-keygen": "dist/entrypoints/ozy-ssh-keygen.js"
+    "ozy": "dist/ozy",
+    "ozy-signing-agent": "dist/ozy-signing-agent",
+    "ozy-virtual-security-key": "dist/ozy-virtual-security-key",
+    "ozy-ssh-keygen": "dist/ozy-ssh-keygen"
   },
   "files": [
     "dist"
