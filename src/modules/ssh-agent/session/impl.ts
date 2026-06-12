@@ -182,7 +182,7 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
           Effect.andThen(Effect.log(`Cache entry revoked for ${pubkey}`)),
           Effect.delay(`${cacheMinutes} minutes`)
         ));
-        yield* Effect.log(`Cached key for ${pubkey} for ${cacheMinutes} minutes`);
+        yield* Effect.log(`Cached key ${pubkey} (${new CredentialId(session.credentialId).humanReadableName}) for ${cacheMinutes} minutes`);
       }
     }
 
@@ -192,6 +192,7 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
     } else {
       yield* Effect.log(`PRF flow succeeded for session ${session.id}`);
     }
+    let totalSigned = 0;
     for (const req of session.receivedSignRequests) {
       if (Result.isSuccess(prfResult)) {
         const { keyPair } = prfResult.success;
@@ -200,7 +201,8 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
           catch: (e) => SessionError.cases.InternalError.make({ reason: String(e) }),
         }));
         if (Result.isSuccess(sigResult)) {
-          yield* Effect.log(`Signed ${req.signRequest.data.length} bytes for session ${session.id}`);
+          totalSigned++;
+          yield* Effect.log(`(${totalSigned}/${session.receivedSignRequests.length}) Signed ${req.signRequest.data.length} bytes for session ${session.id}`);
           yield* Deferred.succeed(req.deferredResponse, sigResult.success);
         } else {
           yield* Effect.log(`Signing failed for session ${session.id}: ${JSON.stringify(sigResult.failure)}`);
@@ -209,6 +211,7 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
       } else {
         yield* Deferred.fail(req.deferredResponse, prfResult.failure);
       }
+
     }
   }
 

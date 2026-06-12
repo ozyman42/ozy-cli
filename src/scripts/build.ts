@@ -64,9 +64,11 @@ function generateLauncher(cmd: string): string {
   const pkgName: string = PKG.name;
   const pkgVersion: string = PKG.version;
   return `#!/usr/bin/env node
-'use strict';
-const { spawnSync } = require('child_process');
-const { writeFileSync, chmodSync } = require('fs');
+import { spawnSync } from 'child_process';
+import { writeFileSync, chmodSync } from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
 
 const CMD = '${cmd}';
 const PKG_NAME = '${pkgName}';
@@ -97,7 +99,7 @@ const binInTarball = \`package/dist/\${CMD}\${isWindows ? '.exe' : ''}\`;
 
 process.stderr.write(\`Downloading \${CMD} for \${platformKey}...\\n\`);
 
-(async () => {
+try {
   const response = await fetch(tarballUrl);
   if (!response.ok) {
     process.stderr.write(\`Failed to download: \${response.status} \${response.statusText}\\n\`);
@@ -122,9 +124,9 @@ process.stderr.write(\`Downloading \${CMD} for \${platformKey}...\\n\`);
 
   const result = spawnSync(__filename, process.argv.slice(2), { stdio: 'inherit' });
   process.exit(result.status ?? 1);
-})().catch(err => {
+} catch (err) {
   process.stderr.write(\`Error: \${err.message}\\n\`);
   process.exit(1);
-});
+}
 `;
 }
