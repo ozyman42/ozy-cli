@@ -66,13 +66,17 @@ function generateLauncher(cmd: string): string {
   return `#!/usr/bin/env node
 import { spawnSync } from 'child_process';
 import { writeFileSync, chmodSync } from 'fs';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-
+const SELF = process.argv[1];
 const CMD = '${cmd}';
 const PKG_NAME = '${pkgName}';
 const PKG_VERSION = '${pkgVersion}';
+
+function log(msg) { process.stderr.write(\`[\${CMD}] \${msg}\\n\`); }
+
+log(\`argv[1]: \${SELF}\`);
+log(\`import.meta.url: \${import.meta.url}\`);
+log(\`process.platform: \${process.platform}  process.arch: \${process.arch}\`);
 
 // process.platform: 'aix'|'android'|'darwin'|'freebsd'|'haiku'|'linux'|'openbsd'|'sunos'|'win32'
 // process.arch:     'arm'|'arm64'|'ia32'|'loong64'|'mips'|'mipsel'|'ppc64'|'riscv64'|'s390'|'s390x'|'x64'
@@ -87,9 +91,10 @@ const PLATFORM_MAP = {
 const rawKey = \`\${process.platform}-\${process.arch}\`;
 const platformKey = PLATFORM_MAP[rawKey];
 if (!platformKey) {
-  process.stderr.write(\`Unsupported platform: \${process.platform}-\${process.arch}\\n\`);
+  log(\`unsupported platform: "\${rawKey}" — no entry in PLATFORM_MAP\`);
   process.exit(1);
 }
+log(\`platform key: \${platformKey} (from "\${rawKey}")\`);
 
 const pkgBaseName = PKG_NAME.split('/').pop();
 const platformVersion = \`\${PKG_VERSION}-\${platformKey}.0\`;
@@ -98,34 +103,40 @@ const isWindows = platformKey.startsWith('windows-');
 const binInTarball = \`package/dist/\${CMD}\${isWindows ? '.exe' : ''}\`;
 
 process.stderr.write(\`Downloading \${CMD} for \${platformKey}...\\n\`);
+log(\`fetching: \${tarballUrl}\`);
 
 try {
   const response = await fetch(tarballUrl);
   if (!response.ok) {
-    process.stderr.write(\`Failed to download: \${response.status} \${response.statusText}\\n\`);
+    log(\`fetch failed: \${response.status} \${response.statusText}\`);
     process.exit(1);
   }
   const buffer = Buffer.from(await response.arrayBuffer());
+  log(\`downloaded \${buffer.length} bytes\`);
 
   const extracted = spawnSync('tar', ['-xzOf', '-', binInTarball], {
     input: buffer,
     maxBuffer: 256 * 1024 * 1024,
     stdio: ['pipe', 'pipe', 'inherit'],
   });
-
   if (extracted.status !== 0) {
-    process.stderr.write(\`Failed to extract \${binInTarball} from tarball\\n\`);
+    log(\`tar extraction failed (status \${extracted.status}) for \${binInTarball}\`);
     process.exit(1);
   }
+  log(\`extracted \${binInTarball} (\${extracted.stdout.length} bytes)\`);
 
-  writeFileSync(__filename, extracted.stdout);
-  chmodSync(__filename, 0o755);
+  log(\`writing binary to: \${SELF}\`);
+  writeFileSync(SELF, extracted.stdout);
+  chmodSync(SELF, 0o755);
   process.stderr.write(\`Installed \${CMD}\\n\`);
 
-  const result = spawnSync(__filename, process.argv.slice(2), { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
+  log(\`spawning: \${SELF}  args: \${JSON.stringify(process.argv.slice(2))}\`);
+  const result = spawnSync(SELF, process.argv.slice(2), { stdio: 'inherit' });
+  const errStr = result.error ? \`  error=\${result.error.message}\` : '';
+  log(\`spawn exited: status=\${result.status}\${errStr}\`);
+  process.exit(result.status !== null ? result.status : 1);
 } catch (err) {
-  process.stderr.write(\`Error: \${err.message}\\n\`);
+  log(\`error: \${err.message}\`);
   process.exit(1);
 }
 `;

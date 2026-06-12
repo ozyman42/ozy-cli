@@ -1,13 +1,7 @@
 import { Deferred, Effect, Option, pipe, Result, Layer } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
-
-function fmtChain(chain: { command: string; directory: Option.Option<string> }[]): string {
-  return chain.map(p => {
-    const dir = Option.getOrElse(() => '(cannot load dir)')(p.directory);
-    return `${p.command}(${dir})`;
-  }).join(' → ');
-}
 import { SSHPubkey, CredentialId, SSHKeyPair } from "@/modules/common/crypto/impl";
+import { renderCallerTree } from "@/common/render-caller-tree";
 import { BunHttpServer } from "@effect/platform-bun";
 import { randomUUID } from "node:crypto";
 import { agentModules } from "@/modules/ssh-agent";
@@ -179,7 +173,7 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
         this.keyCache.set(pubkey, keyPair);
         Effect.runFork(pipe(
           Effect.sync(() => { this.keyCache.delete(pubkey); }),
-          Effect.andThen(Effect.log(`Cache entry revoked for ${pubkey}`)),
+          Effect.andThen(Effect.log(`Cache entry revoked for ${pubkey} after ${cacheMinutes} minutes`)),
           Effect.delay(`${cacheMinutes} minutes`)
         ));
         yield* Effect.log(`Cached key ${pubkey} (${new CredentialId(session.credentialId).humanReadableName}) for ${cacheMinutes} minutes`);
@@ -219,7 +213,7 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
     const {pubkey, callerTree} = signRequest;
     // On the no active session case. We create one.
     if (Option.isNone(this.activeSession)) {
-      yield* Effect.log(`Received sign request when no session exists. Chain: ${fmtChain(callerTree.slice(-3))}`);
+      yield* Effect.log(`Received sign request when no session exists. Chain:\n${renderCallerTree(callerTree.slice(-3))}`);
       yield* this.startSession({
         expectedCommonAncestorPID: callerTree[callerTree.length - 1].pid,
         expectedSignRequests: [{

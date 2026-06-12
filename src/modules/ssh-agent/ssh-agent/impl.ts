@@ -6,6 +6,7 @@ import { agentModules } from "@/modules/ssh-agent";
 import { commonModules } from "@/modules/common";
 import { SSHPubkey } from "@/modules/common/crypto/impl";
 import { log } from "@/common/log";
+import { renderCallerTree } from "@/common/render-caller-tree";
 import { AGENT_PID_FILE_PATH, AGENT_SOCK_FILE_PATH } from "@/common/constants";
 import { writeFileSync } from "node:fs";
 
@@ -116,7 +117,7 @@ export class SSHAgentImpl extends implementing(SSHAgent).uses(Session, KeyMapSto
 
     const pubkey = SSHPubkey.fromWire(pubkeyWire);
 
-    this.log(`Sign request for pubkey ${pubkey.authorizedKey}`, callerChain.slice(-3));
+    this.log(`Sign request for pubkey ${pubkey.authorizedKey}\n${renderCallerTree(callerChain.slice(-3))}`);
     const signResult = yield* pipe(
       effunct(session.sign)({
         data: dataToSign,
