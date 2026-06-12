@@ -13,11 +13,13 @@ import type { ActiveSession } from "./impl";
 type BrowserResult = {
   seed: Uint8Array;
   credentialId: CredentialId;
+  cacheMinutes?: number;
 };
 
 export type PrfResult = {
   keyPair: SSHKeyPair;
   credentialId: CredentialId;
+  cacheMinutes?: number;
 };
 
 export type PrfInput = Data.TaggedEnum<{
@@ -78,6 +80,7 @@ export function* prfFlow(input: PrfInput): EffectGen<PrfResult, SessionError, Co
               const body = await req.json() as {
                 encryptedSeed: string; iv: string;
                 browserPublicKey: string; credentialId: string;
+                cacheMinutes?: number;
               };
               Effect.runFork(Effect.gen(function* () {
                 const innerResult = yield* Effect.result(Effect.gen(function* () {
@@ -91,6 +94,7 @@ export function* prfFlow(input: PrfInput): EffectGen<PrfResult, SessionError, Co
                   const completed = yield* Deferred.succeed(deferred, {
                     seed: decrypted,
                     credentialId: CredentialId.fromBase64(body.credentialId),
+                    cacheMinutes: body.cacheMinutes,
                   });
                   if (!completed) {
                     yield* Effect.fail(SessionError.cases.InternalError.make({
@@ -138,11 +142,11 @@ export function* prfFlow(input: PrfInput): EffectGen<PrfResult, SessionError, Co
   log(`Opening browser for WebAuthn PRF on port ${server.port}`);
   yield* osPlatform.openBrowserWindow(`http://localhost:${server.port}/?id=${flowId}`);
 
-  const { seed, credentialId } = yield* Deferred.await(deferred);
+  const { seed, credentialId, cacheMinutes } = yield* Deferred.await(deferred);
 
   const keyPair = yield* pipe(
     SSHKeyPair.fromSeed(seed, `${FUTURE_TOOL_NAME}-key-v1`),
     Effect.mapError(reason => SessionError.cases.InternalError.make({ reason }))
   );
-  return { keyPair, credentialId };
+  return { keyPair, credentialId, cacheMinutes };
 }

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Effect, Option } from "effect";
 import { makeCommand } from "@/common/command";
+import { CLI_CMD_NAME, PACKAGE_NAME } from "@/common/constants";
 
 type PackageManager = "bun" | "pnpm" | "npm";
 type InstallScope = "global" | "local";
@@ -41,7 +42,7 @@ function detectInstall(binaryPath: string): Option.Option<InstallInfo> {
 }
 
 function buildUpgradeCommand(info: InstallInfo): string[] {
-  const pkg = "@ozyman42/ozy-cli@latest";
+  const pkg = `${PACKAGE_NAME}@latest`;
   if (info.scope === "global") {
     if (info.pm === "bun") return ["bun", "add", "--no-cache", "-g", pkg];
     if (info.pm === "pnpm") return ["pnpm", "add", "-g", pkg];
@@ -55,16 +56,16 @@ function buildUpgradeCommand(info: InstallInfo): string[] {
 function whichOzy(): Effect.Effect<string, string> {
   return Effect.tryPromise({
     try: async () => {
-      const proc = Bun.spawn(["which", "ozy"], { stdout: "pipe", stderr: "pipe" });
+      const proc = Bun.spawn(["which", CLI_CMD_NAME], { stdout: "pipe", stderr: "pipe" });
       const code = await proc.exited;
-      if (code !== 0) throw new Error("ozy binary not found — install with: bun add -g @ozyman42/ozy-cli");
+      if (code !== 0) throw new Error(`${CLI_CMD_NAME} binary not found — install with: bun add --no-cache -g ${PACKAGE_NAME}@latest`);
       return (await new Response(proc.stdout).text()).trim();
     },
     catch: (e) => e instanceof Error ? e.message : String(e),
   });
 }
 
-export const upgrade = makeCommand("upgrade", "upgrade ozy-cli to the latest version", () =>
+export const upgrade = makeCommand("upgrade", `upgrade ${CLI_CMD_NAME} to the latest version`, () =>
   Effect.gen(function* () {
     const binaryPath = yield* whichOzy();
 

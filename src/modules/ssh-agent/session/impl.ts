@@ -7,14 +7,14 @@ function fmtChain(chain: { command: string; directory: Option.Option<string> }[]
     return `${p.command}(${dir})`;
   }).join(' → ');
 }
-import { SSHPubkey, CredentialId } from "@/modules/common/crypto/impl";
+import { SSHPubkey, CredentialId, SSHKeyPair } from "@/modules/common/crypto/impl";
 import { BunHttpServer } from "@effect/platform-bun";
 import { randomUUID } from "node:crypto";
 import { agentModules } from "@/modules/ssh-agent";
 import { commonModules } from "@/modules/common";
 import { SessionError, type ISession, type SetupInput, SetupOutput, StartSessionInput, type SignInput } from "./interface";
 import { AgentRpcGroup } from "./interface-rpc";
-import { prfFlow, PrfInput } from "./prf-flow";
+import { prfFlow, PrfInput, type PrfResult } from "./prf-flow";
 import { AGENT_PORT, CURRENT_VERSION, DEFAULT_SESSION_TIMEOUT_SECONDS } from "@/common/constants";
 import { HttpRouter } from "effect/unstable/http";
 import { RpcServer, RpcSerialization } from "effect/unstable/rpc";
@@ -41,6 +41,7 @@ const SIGN_REQUESTS_COLLECTION_TIMEOUT_SECONDS = 3;
 
 export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, KeyMapStore) implements ISession {
   private activeSession: Option.Option<ActiveSession> = Option.none();
+  private keyCache = new Map<string, SSHKeyPair>();
 
   private *abortSession(session: ActiveSession, onlyCheckRequestsAccumulated: boolean): EffectGen<void> {
     if (session.completed) return;
@@ -160,12 +161,31 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
     // and sessions
     this.activeSession = Option.none();
 
-    const prfResult = yield* pipe(
-      effunct(prfFlow)(PrfInput.DerivePubkeyForRequests({session})),
-      Effect.scoped,
-      Effect.provide(this.context),
-      Effect.result
-    );
+    const cachedKeyPair = this.keyCache.get(session.pubkey);
+    let prfResult: Result.Result<PrfResult, SessionError>;
+    if (cachedKeyPair) {
+      yield* Effect.log(`Using cached key for session ${session.id}`);
+      prfResult = Result.succeed({ keyPair: cachedKeyPair, credentialId: new CredentialId(session.credentialId) });
+    } else {
+      prfResult = yield* pipe(
+        effunct(prfFlow)(PrfInput.DerivePubkeyForRequests({session})),
+        Effect.scoped,
+        Effect.provide(this.context),
+        Effect.result
+      );
+      if (Result.isSuccess(prfResult) && prfResult.success.cacheMinutes !== undefined) {
+        const { keyPair, cacheMinutes } = prfResult.success;
+        const pubkey = session.pubkey;
+        this.keyCache.set(pubkey, keyPair);
+        Effect.runFork(pipe(
+          Effect.sync(() => { this.keyCache.delete(pubkey); }),
+          Effect.andThen(Effect.log(`Cache entry revoked for ${pubkey}`)),
+          Effect.delay(`${cacheMinutes} minutes`)
+        ));
+        yield* Effect.log(`Cached key for ${pubkey} for ${cacheMinutes} minutes`);
+      }
+    }
+
     session.completed = true;
     if (Result.isFailure(prfResult)) {
       yield* Effect.log(`PRF flow failed for session ${session.id}: ${JSON.stringify(prfResult.failure)}`);
@@ -190,7 +210,6 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
         yield* Deferred.fail(req.deferredResponse, prfResult.failure);
       }
     }
-    
   }
 
   *sign(signRequest: SignInput): EffectGen<Buffer, SessionError> {

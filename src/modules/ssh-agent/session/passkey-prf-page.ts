@@ -156,6 +156,7 @@ h1{font-size:1.5rem}#st{font-size:1.1rem;margin-top:20px}.ok{color:#060}.err{col
 <body>
 <h1>${title}</h1>
 ${contextHtml}
+<div id="trust-row" style="margin-bottom:16px;color:#aaa;font-size:.9rem"><label><input type="checkbox" id="trust" onchange="trustChanged()"> trust this device (cache SSH private key) for <input type="number" id="mins" value="15" min="1" disabled style="width:4rem;color:#aaa"> minutes</label></div>
 ${buttonsHtml(mode, friendlyName)}
 <p id="st"></p>
 <script>
@@ -163,6 +164,7 @@ const C=${cfg};
 function bu(b){return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'')}
 function fu(s){const b=atob(s.replace(/-/g,'+').replace(/_/g,'/'));const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u}
 function btnClick(m){document.querySelectorAll('.btn').forEach(b=>b.disabled=true);main(m);}
+function trustChanged(){const c=document.getElementById('trust').checked;const m=document.getElementById('mins');document.getElementById('trust-row').style.color=c?'':'#aaa';m.disabled=!c;m.style.color=c?'':'#aaa';}
 async function main(modeOverride){
   const mode=modeOverride??C.mode;
   const st=document.getElementById('st');
@@ -204,8 +206,9 @@ async function main(modeOverride){
     const iv=crypto.getRandomValues(new Uint8Array(12));
     const enc=await crypto.subtle.encrypt({name:'AES-GCM',iv},ak,prf);
     const bp=await crypto.subtle.exportKey('raw',bkp.publicKey);
+    const cm=document.getElementById('trust').checked?Math.max(1,parseInt(document.getElementById('mins').value,10)||15):undefined;
     const r=await fetch('/seed?id='+fid,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({encryptedSeed:bu(enc),iv:bu(iv),browserPublicKey:bu(bp),credentialId:bu(cred.rawId)})});
+      body:JSON.stringify({encryptedSeed:bu(enc),iv:bu(iv),browserPublicKey:bu(bp),credentialId:bu(cred.rawId),cacheMinutes:cm})});
     if(!r.ok)throw new Error('Agent returned '+r.status);
     const d=await r.json();
     st.className='ok';st.textContent='Authorized as '+d.friendlyName+'. You can close this tab.';

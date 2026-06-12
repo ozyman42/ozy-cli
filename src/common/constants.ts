@@ -1,6 +1,7 @@
 import * as path from "node:path";
-import { bin, version } from "../../package.json";
+import { bin, version, name } from "../../package.json";
 
+export const PACKAGE_NAME = name;
 export const FUTURE_TOOL_NAME = "jive";
 const CLI_DIR = path.dirname(process.execPath);
 export const CLI_CMD_NAME = "ozy" satisfies keyof typeof bin;
