@@ -154,12 +154,13 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
     // in a short time frame. In the future we may have a backlog of non matching signing requests
     // and sessions
     this.activeSession = Option.none();
+    const credential = new CredentialId(session.credentialId);
 
     const cachedKeyPair = this.keyCache.get(session.pubkey);
     let prfResult: Result.Result<PrfResult, SessionError>;
     if (cachedKeyPair) {
       yield* Effect.log(`Using cached key for session ${session.id}`);
-      prfResult = Result.succeed({ keyPair: cachedKeyPair, credentialId: new CredentialId(session.credentialId) });
+      prfResult = Result.succeed({ keyPair: cachedKeyPair, credentialId: credential });
     } else {
       prfResult = yield* pipe(
         effunct(prfFlow)(PrfInput.DerivePubkeyForRequests({session})),
@@ -173,10 +174,10 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
         this.keyCache.set(pubkey, keyPair);
         Effect.runFork(pipe(
           Effect.sync(() => { this.keyCache.delete(pubkey); }),
-          Effect.andThen(Effect.log(`Cache entry revoked for ${pubkey} after ${cacheMinutes} minutes`)),
+          Effect.andThen(Effect.log(`Cache entry revoked for ${pubkey} (${credential.humanReadableName}) after ${cacheMinutes} minutes`)),
           Effect.delay(`${cacheMinutes} minutes`)
         ));
-        yield* Effect.log(`Cached key ${pubkey} (${new CredentialId(session.credentialId).humanReadableName}) for ${cacheMinutes} minutes`);
+        yield* Effect.log(`Cached key ${pubkey} (${credential.humanReadableName}) for ${cacheMinutes} minutes`);
       }
     }
 

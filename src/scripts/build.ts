@@ -40,7 +40,7 @@ if (Option.isSome(platform) && platform.value === "base-package") {
         ...(pipe(
           platform,
           Option.map(v => ({ target: `bun-${v}` as Bun.Build.CompileTarget })),
-          Option.orElse(() => ({} as any))
+          Option.getOrElse(() => ({}))
         ))
       },
       sourcemap: "inline",
@@ -74,6 +74,7 @@ const PKG_VERSION = '${pkgVersion}';
 
 function log(msg) { process.stderr.write(\`[\${CMD}] \${msg}\\n\`); }
 
+// TODO: remove when tested on all platforms.
 log(\`argv[1]: \${SELF}\`);
 log(\`import.meta.url: \${import.meta.url}\`);
 log(\`process.platform: \${process.platform}  process.arch: \${process.arch}\`);
