@@ -22,10 +22,11 @@ const entrypoints = readdirSync("src/entrypoints")
   .map(f => `src/entrypoints/${f}`);
 
 if (Option.isSome(platform) && platform.value === "base-package") {
+  const allCmds = entrypoints.map(f => basename(f, SUFFIX));
   for (const entrypoint of entrypoints) {
     const cmd = basename(entrypoint, SUFFIX);
     const outFile = join(OUTDIR, cmd);
-    writeFileSync(outFile, generateLauncher(cmd), { mode: 0o755 });
+    writeFileSync(outFile, generateLauncher(cmd, allCmds), { mode: 0o755 });
     console.log(`${entrypoint} -> ${outFile} (node downloader)`);
   }
 } else {
@@ -60,24 +61,23 @@ if (Option.isSome(platform) && platform.value === "base-package") {
   }
 }
 
-function generateLauncher(cmd: string): string {
+function generateLauncher(cmd: string, allCmds: string[]): string {
   const pkgName: string = PKG.name;
   const pkgVersion: string = PKG.version;
   return `#!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { writeFileSync, chmodSync } from 'fs';
+import { writeFileSync, chmodSync, mkdtempSync, rmSync, readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { tmpdir } from 'os';
 
 const SELF = process.argv[1];
+const INSTALL_DIR = dirname(SELF);
 const CMD = '${cmd}';
+const ALL_CMDS = ${JSON.stringify(allCmds)};
 const PKG_NAME = '${pkgName}';
 const PKG_VERSION = '${pkgVersion}';
 
-function log(msg) { process.stderr.write(\`[\${CMD}] \${msg}\\n\`); }
-
-// TODO: remove when tested on all platforms.
-log(\`argv[1]: \${SELF}\`);
-log(\`import.meta.url: \${import.meta.url}\`);
-log(\`process.platform: \${process.platform}  process.arch: \${process.arch}\`);
+function log(msg) { process.stderr.write(\`\${msg}\\n\`); }
 
 // process.platform: 'aix'|'android'|'darwin'|'freebsd'|'haiku'|'linux'|'openbsd'|'sunos'|'win32'
 // process.arch:     'arm'|'arm64'|'ia32'|'loong64'|'mips'|'mipsel'|'ppc64'|'riscv64'|'s390'|'s390x'|'x64'
@@ -92,19 +92,16 @@ const PLATFORM_MAP = {
 const rawKey = \`\${process.platform}-\${process.arch}\`;
 const platformKey = PLATFORM_MAP[rawKey];
 if (!platformKey) {
-  log(\`unsupported platform: "\${rawKey}" — no entry in PLATFORM_MAP\`);
+  log(\`unsupported platform: "\${rawKey}"\`);
   process.exit(1);
 }
-log(\`platform key: \${platformKey} (from "\${rawKey}")\`);
 
 const pkgBaseName = PKG_NAME.split('/').pop();
 const platformVersion = \`\${PKG_VERSION}-\${platformKey}.0\`;
 const tarballUrl = \`https://registry.npmjs.org/\${PKG_NAME}/-/\${pkgBaseName}-\${platformVersion}.tgz\`;
 const isWindows = platformKey.startsWith('windows-');
-const binInTarball = \`package/dist/\${CMD}\${isWindows ? '.exe' : ''}\`;
 
-process.stderr.write(\`Downloading \${CMD} for \${platformKey}...\\n\`);
-log(\`fetching: \${tarballUrl}\`);
+log(\`Initial run. Fetching \${PKG_NAME} binaries from : \${tarballUrl}\`);
 
 try {
   const response = await fetch(tarballUrl);
@@ -112,29 +109,54 @@ try {
     log(\`fetch failed: \${response.status} \${response.statusText}\`);
     process.exit(1);
   }
-  const buffer = Buffer.from(await response.arrayBuffer());
-  log(\`downloaded \${buffer.length} bytes\`);
-
-  const extracted = spawnSync('tar', ['-xzOf', '-', binInTarball], {
-    input: buffer,
-    maxBuffer: 256 * 1024 * 1024,
-    stdio: ['pipe', 'pipe', 'inherit'],
-  });
-  if (extracted.status !== 0) {
-    log(\`tar extraction failed (status \${extracted.status}) for \${binInTarball}\`);
-    process.exit(1);
+  const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let downloaded = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    downloaded += value.length;
+    const mb = (downloaded / 1024 / 1024).toFixed(1);
+    if (contentLength) {
+      const pct = Math.round(downloaded / contentLength * 100);
+      const totalMb = (contentLength / 1024 / 1024).toFixed(1);
+      process.stderr.write(\`\\rdownloading... \${pct}% (\${mb}MB/\${totalMb}MB)  \`);
+    } else {
+      process.stderr.write(\`\\rdownloading... \${mb}MB  \`);
+    }
   }
-  log(\`extracted \${binInTarball} (\${extracted.stdout.length} bytes)\`);
+  process.stderr.write(\`\\rdownloading... 100% (\${mb}MB)\`);
+  process.stderr.write('\\n');
+  log(\`Done.\`);
+  const buffer = Buffer.concat(chunks.map(c => Buffer.from(c)));
 
-  log(\`writing binary to: \${SELF}\`);
-  writeFileSync(SELF, extracted.stdout);
-  chmodSync(SELF, 0o755);
-  process.stderr.write(\`Installed \${CMD}\\n\`);
-
-  log(\`spawning: \${SELF}  args: \${JSON.stringify(process.argv.slice(2))}\`);
+  const tempDir = mkdtempSync(join(tmpdir(), 'ozy-install-'));
+  try {
+    const extractResult = spawnSync('tar', ['-xzf', '-', '-C', tempDir], {
+      input: buffer,
+      maxBuffer: 256 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    if (extractResult.status !== 0) {
+      log(\`tar extraction failed (status \${extractResult.status})\`);
+      process.exit(1);
+    }
+    for (const c of ALL_CMDS) {
+      const src = join(tempDir, 'package', 'dist', c + (isWindows ? '.exe' : ''));
+      const dest = join(INSTALL_DIR, c + (isWindows ? '.exe' : ''));
+      const content = readFileSync(src);
+      log(\`installing \${c} (\${content.length} bytes) → \${dest}\`);
+      writeFileSync(dest, content);
+      chmodSync(dest, 0o755);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true });
+  }
+  process.stderr.write(\`Installed \${ALL_CMDS.join(', ')}\\n\`);
   const result = spawnSync(SELF, process.argv.slice(2), { stdio: 'inherit' });
   const errStr = result.error ? \`  error=\${result.error.message}\` : '';
-  log(\`spawn exited: status=\${result.status}\${errStr}\`);
   process.exit(result.status !== null ? result.status : 1);
 } catch (err) {
   log(\`error: \${err.message}\`);

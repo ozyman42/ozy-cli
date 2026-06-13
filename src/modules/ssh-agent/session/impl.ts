@@ -148,6 +148,17 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
     return Option.none();
   }
 
+  private *cacheKey(keyPair: SSHKeyPair, credentialId: CredentialId, cacheMinutes: number): EffectGen<void> {
+    const pubkey = keyPair.pubkey.authorizedKey;
+    this.keyCache.set(pubkey, keyPair);
+    Effect.runFork(pipe(
+      Effect.sync(() => { this.keyCache.delete(pubkey); }),
+      Effect.andThen(Effect.log(`Cache entry revoked for ${pubkey} (${credentialId.humanReadableName}) after ${cacheMinutes} minutes`)),
+      Effect.delay(`${cacheMinutes} minutes`)
+    ));
+    yield* Effect.log(`Cached key ${pubkey} (${credentialId.humanReadableName}) for ${cacheMinutes} minutes`);
+  }
+
   private *resolveAllSignRequests(session: ActiveSession): EffectGen<void> {
     // By setting it to none here, we technically do allow parallel sessions, the
     // caveat is there's an expectation that all requests for a session are retrieved
@@ -168,16 +179,17 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
         Effect.provide(this.context),
         Effect.result
       );
-      if (Result.isSuccess(prfResult) && prfResult.success.cacheMinutes !== undefined) {
-        const { keyPair, cacheMinutes } = prfResult.success;
-        const pubkey = session.pubkey;
-        this.keyCache.set(pubkey, keyPair);
-        Effect.runFork(pipe(
-          Effect.sync(() => { this.keyCache.delete(pubkey); }),
-          Effect.andThen(Effect.log(`Cache entry revoked for ${pubkey} (${credential.humanReadableName}) after ${cacheMinutes} minutes`)),
-          Effect.delay(`${cacheMinutes} minutes`)
-        ));
-        yield* Effect.log(`Cached key ${pubkey} (${credential.humanReadableName}) for ${cacheMinutes} minutes`);
+      if (Result.isSuccess(prfResult)) {
+        const { keyPair } = prfResult.success;
+        const derivedPubkey = keyPair.pubkey.authorizedKey;
+        if (derivedPubkey !== session.pubkey) {
+          yield* Effect.log(`PRF derived pubkey ${derivedPubkey} but session expects ${session.pubkey}`);
+          prfResult = Result.fail(SessionError.cases.InternalError.make({
+            reason: `PRF derived pubkey ${derivedPubkey} does not match session pubkey ${session.pubkey}`
+          }));
+        } else if (prfResult.success.cacheMinutes !== undefined) {
+          yield* this.cacheKey(keyPair, credential, prfResult.success.cacheMinutes);
+        }
       }
     }
 
@@ -262,7 +274,7 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
   }
 
   *setup(input: SetupInput): EffectGen<SetupOutput, SessionError> {
-    const { keyPair, credentialId: derivedCredentialId } = yield* pipe(
+    const { keyPair, credentialId: derivedCredentialId, cacheMinutes } = yield* pipe(
       effunct(prfFlow)(PrfInput.DerivePubkeyOnly({ pubkey: input.pubkey, credentialId: input.credentialId, username: input.username })),
       Effect.scoped,
       Effect.provide(this.context)
@@ -280,6 +292,10 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
       effunct(this.dependencies.KeyMapStore.addKey)(keyPair.pubkey, derivedCredentialId.base58),
       Effect.mapError(reason => SessionError.cases.InternalError.make({ reason }))
     );
+
+    if (cacheMinutes !== undefined) {
+      yield* this.cacheKey(keyPair, derivedCredentialId, cacheMinutes);
+    }
 
     return { pubkey: derivedPubkey, credentialId: derivedCredentialId.base58 };
   }
