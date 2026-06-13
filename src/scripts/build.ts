@@ -73,7 +73,7 @@ import { tmpdir } from 'os';
 const SELF = process.argv[1];
 const INSTALL_DIR = dirname(SELF);
 const CMD = '${cmd}';
-const ALL_CMDS = ${JSON.stringify(allCmds)};
+const ALL_CMDS = ${JSON.stringify(allCmds.sort())};
 const PKG_NAME = '${pkgName}';
 const PKG_VERSION = '${pkgVersion}';
 
@@ -101,7 +101,7 @@ const platformVersion = \`\${PKG_VERSION}-\${platformKey}.0\`;
 const tarballUrl = \`https://registry.npmjs.org/\${PKG_NAME}/-/\${pkgBaseName}-\${platformVersion}.tgz\`;
 const isWindows = platformKey.startsWith('windows-');
 
-log(\`Initial run. Fetching \${PKG_NAME} binaries from : \${tarballUrl}\`);
+log(\`Initial run. Fetching all package binaries (\${ALL_CMDS.join(", ")}) from \${tarballUrl}\`);
 
 try {
   const response = await fetch(tarballUrl);
@@ -113,6 +113,7 @@ try {
   const reader = response.body.getReader();
   const chunks = [];
   let downloaded = 0;
+  const totalMb = (contentLength / 1024 / 1024).toFixed(1);
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -121,15 +122,13 @@ try {
     const mb = (downloaded / 1024 / 1024).toFixed(1);
     if (contentLength) {
       const pct = Math.round(downloaded / contentLength * 100);
-      const totalMb = (contentLength / 1024 / 1024).toFixed(1);
       process.stderr.write(\`\\rdownloading... \${pct}% (\${mb}MB/\${totalMb}MB)  \`);
     } else {
       process.stderr.write(\`\\rdownloading... \${mb}MB  \`);
     }
   }
-  process.stderr.write(\`\\rdownloading... 100% (\${mb}MB)\`);
+  process.stderr.write(\`\\rdownloading... Done. (\${totalMb}MB)\`);
   process.stderr.write('\\n');
-  log(\`Done.\`);
   const buffer = Buffer.concat(chunks.map(c => Buffer.from(c)));
 
   const tempDir = mkdtempSync(join(tmpdir(), 'ozy-install-'));
