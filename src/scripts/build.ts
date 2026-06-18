@@ -131,7 +131,7 @@ try {
   process.stderr.write('\\n');
   const buffer = Buffer.concat(chunks.map(c => Buffer.from(c)));
 
-  const tempDir = mkdtempSync(join(tmpdir(), \`\${PKG_NAME}-install-\`));
+  const tempDir = mkdtempSync(join(tmpdir(), \`\${pkgBaseName}-install-\`));
   try {
     const extractResult = spawnSync('tar', ['-xzf', '-', '-C', tempDir], {
       input: buffer,
