@@ -1,24 +1,26 @@
-import { Effect, Layer, pipe, Data, FileSystem, Schedule } from "effect";
+import { Effect, Layer, Match, Option, pipe, Data, FileSystem, Schedule, Result } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
 import { FetchHttpClient } from "effect/unstable/http";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import { AgentRpcGroup } from "@/modules/ssh-agent/session/interface-rpc";
 import { cliModules } from "..";
-import type { AgentRpcClient, IAgentClient } from "./interface";
-import { AGENT_CMD_PATH, AGENT_PID_FILE_PATH, AGENT_PORT, CURRENT_VERSION } from "@/common/constants";
+import { type AgentRpcClient, type IAgentClient, AgentClientError } from "./interface";
+import { AGENT_CMD_PATH, AGENT_PID_FILE_PATH, AGENT_PORT_FILE_PATH, AGENT_SOCK_FILE_PATH, CURRENT_VERSION } from "@/common/constants";
+import { readFileSync, rmSync } from "node:fs";
 import { log } from "@/common/log";
 
-const agentClientLayer = pipe(
-  RpcClient.layerProtocolHttp({ url: `http://localhost:${AGENT_PORT}/rpc` }),
-  Layer.provideMerge(RpcSerialization.layerJson),
-  Layer.provideMerge(FetchHttpClient.layer)
-);
+function makeAgentClientLayer(port: number) {
+  return pipe(
+    RpcClient.layerProtocolHttp({ url: `http://localhost:${port}/rpc` }),
+    Layer.provideMerge(RpcSerialization.layerJson),
+    Layer.provideMerge(FetchHttpClient.layer)
+  );
+}
 
 class NoResponseError extends Data.TaggedError("NoResponseError")<{}> {
-  public toString() {
-    return "No response from agent.";
-  }
+  public toString() { return "No response from agent."; }
 }
+
 class NonMatchingVersionError extends Data.TaggedError("NonMatchingVersionError")<{
   cliVersion: string;
   agentVersion: string;
@@ -31,39 +33,40 @@ class NonMatchingVersionError extends Data.TaggedError("NonMatchingVersionError"
 type PingError = NoResponseError | NonMatchingVersionError;
 
 export class AgentClientImpl extends implementing(cliModules.AgentClient).uses(FileSystem.FileSystem) implements IAgentClient {
-  *usingClient<A, E>(use: (client: AgentRpcClient) => EffectGen<A, E>): EffectGen<A, E> {
-    return yield* Effect.scoped(
+  private *readPortFromFile(): EffectGen<Option.Option<number>, never> {
+    const result = yield* pipe(
+      this.getDependency(FileSystem.FileSystem).readFileString(AGENT_PORT_FILE_PATH),
+      Effect.result
+    );
+    if (Result.isFailure(result)) return Option.none();
+    const port = parseInt(result.success.trim());
+    if (isNaN(port) || port <= 0 || port > 65535) {
+      log(`Read out of bounds port ${port}`);
+      return Option.none();
+    }
+    return Option.some(port);
+  }
+
+  private *pingAtPort(port: number): EffectGen<void, PingError> {
+    yield* Effect.scoped(
       Effect.gen(function* () {
         const client = yield* RpcClient.make(AgentRpcGroup);
-        return yield* use(client);
+        const { version } = yield* pipe(
+          client.GetVersion({}),
+          Effect.catchTag("RpcClientError", () => new NoResponseError())
+        );
+        if (version !== CURRENT_VERSION)
+          yield* new NonMatchingVersionError({ cliVersion: CURRENT_VERSION, agentVersion: version });
       })
-    ).pipe(Effect.provide(agentClientLayer));
+    ).pipe(Effect.provide(makeAgentClientLayer(port)));
   }
 
-  private *ping(): EffectGen<{running: true}, PingError> {
-    return yield* this.usingClient(function* (client): EffectGen<{running: true}, PingError> {
-      const { version } = yield* pipe(
-        client.GetVersion({}),
-        Effect.catchTag("RpcClientError", () => new NoResponseError())
-      );
-      if (version !== CURRENT_VERSION)
-        return yield* new NonMatchingVersionError({
-          cliVersion: CURRENT_VERSION,
-          agentVersion: version
-        });
-      return {running: true};
-    });
-  }
-
-  private *killAgent(): EffectGen<void, string> {
-    const pidFileContents = yield* pipe(
-      this.getDependency(FileSystem.FileSystem).readFile(AGENT_PID_FILE_PATH),
-      Effect.catchTag("PlatformError", err => Effect.fail(`${err.name}: ${err.message}`))
-    );
-    const PID = parseInt(pidFileContents.toString());
-    log(`Killing agent on PID ${PID}`);
-    process.kill(PID, "SIGTERM");
-    yield* Effect.sleep(500);
+  private *ping(): EffectGen<{ port: number }, PingError> {
+    const portOption = yield* effunct(this.readPortFromFile)();
+    if (Option.isNone(portOption)) return yield* new NoResponseError();
+    const port = portOption.value;
+    yield* effunct(this.pingAtPort)(port);
+    return { port };
   }
 
   private *waitForPidFile(expectedPid: number): EffectGen<void, string> {
@@ -87,45 +90,63 @@ export class AgentClientImpl extends implementing(cliModules.AgentClient).uses(F
     );
   }
 
-  private *startAgent(): EffectGen<void, string | PingError> {
+  private *startAgent(): EffectGen<{ pid: number; port: number }, string | PingError> {
     const proc = Bun.spawn([AGENT_CMD_PATH], { stdout: "ignore", stderr: "ignore" });
     yield* effunct(this.waitForPidFile)(proc.pid);
-    yield* this.ping();
+    const { port } = yield* effunct(this.ping)();
     log(`Started agent at PID ${proc.pid}`);
+    return { pid: proc.pid, port };
   }
 
   *killIfRunning(): EffectGen<void, string> {
-    const fs = this.getDependency(FileSystem.FileSystem);
-    const pidExists = yield* pipe(
-      fs.exists(AGENT_PID_FILE_PATH),
-      Effect.catchTag("PlatformError", () => Effect.succeed(false))
-    );
-    if (pidExists) yield* effunct(this.killAgent)();
+    try {
+      // Throws if file missing
+      const pidFileContent = readFileSync(AGENT_PID_FILE_PATH, "utf-8");
+      const PID = parseInt(pidFileContent.trim());
+      // If doesn't exist, below line throws
+      process.kill(PID, 0);
+      log(`Killing agent on PID ${PID}`);
+      process.kill(PID, "SIGTERM");
+      yield* Effect.sleep(500);
+    } catch { }
+    try { rmSync(AGENT_PID_FILE_PATH); } catch {}
+    try { rmSync(AGENT_PORT_FILE_PATH); } catch {}
+    try { rmSync(AGENT_SOCK_FILE_PATH); } catch {}
   }
 
-  *ensureRunning(): EffectGen<void, string> {
-    const { killAgent } = this;
-    const {running} = yield* pipe(
-      effunct(this.ping)(),
-      Effect.catchTag("NonMatchingVersionError", Effect.fn(function*(err) {
-        log(err.toString());
-        yield* killAgent();
-        return {running: false};
-      })),
-      Effect.catchTag("NoResponseError", Effect.fn(function*(err) {
-        log(err.toString());
-        return {running: false};
-      }))
+  private *ensureRunning(): EffectGen<{ port: number }, string> {
+    const pingResult = yield* pipe(effunct(this.ping)(), Effect.result);
+    if (Result.isSuccess(pingResult)) return pingResult.success;
+    log(pingResult.failure.toString());
+    yield* Match.value(pingResult.failure).pipe(
+      Match.tag("NonMatchingVersionError", () => effunct(this.killIfRunning)()),
+      Match.tag("NoResponseError", () => effunct(this.killIfRunning)()),
+      Match.exhaustive
     );
-    if (!running) {
-      yield* pipe(
-        effunct(this.startAgent)(),
-        Effect.mapError(err => 
-          typeof err === "string" ? 
-            err :
-            `Failed to start agent due to ${err.name}: ${err.toString()}`
-        )
-      );
-    }
+    return yield* pipe(
+      effunct(this.startAgent)(),
+      Effect.mapError(err =>
+        typeof err === "string" ?
+          err :
+          `Failed to start agent due to ${err.name}: ${err.toString()}`
+      )
+    );
+  }
+
+  *usingClient<A, E>(use: (client: AgentRpcClient) => EffectGen<A, E>): EffectGen<A, AgentClientError<E>> {
+    const { port } = yield* pipe(
+      effunct(this.ensureRunning)(),
+      Effect.mapError(reason => new AgentClientError.ClientError({ reason }))
+    );
+    return yield* pipe(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* RpcClient.make(AgentRpcGroup);
+          return yield* use(client);
+        })
+      ),
+      Effect.provide(makeAgentClientLayer(port)),
+      Effect.mapError(e => new AgentClientError.UsageError({ cause: e }))
+    );
   }
 }

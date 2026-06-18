@@ -12,6 +12,8 @@ import { SSHConfigImpl } from '@/modules/common/ssh-config/impl';
 import { AGENT_SOCK_FILE_PATH, FUTURE_TOOL_NAME, SSH_KEYGEN_CMD_PATH } from '../../common/constants';
 import { CredentialId } from '@/modules/common/crypto/impl';
 import { BunFileSystem } from "@effect/platform-bun";
+import { using } from '@/common/effective-modules-extensions';
+import { AgentModules } from '@/modules/ssh-agent';
 
 type AllModules = CLIModules.Git | CLIModules.GitHub | CLIModules.AgentClient | CommonModules.SSHConfig;
 
@@ -93,20 +95,21 @@ function* gitSetup(ownerRepoArg?: string): Effect.fn.Return<void, string, AllMod
   if (Option.isSome(maybeKey) && Option.isSome(maybeAuthnKey) && maybeKey.value.pubkey !== maybeAuthnKey.value.pubkey)
     return yield* Effect.fail(`${GitSetupError.SigningAuthnKeyMismatchError}: signing key and authn key pubkeys don't match — GitHub account is in an inconsistent state`);
 
-  // 6. Ensure agent is running
-  yield* agentClient.ensureRunning();
-
-  // 7. Call agent to get/create/verify key
-  const { pubkey, credentialId } = yield* agentClient.usingClient(function* (client): EffectGen<{ pubkey: string; credentialId: string }, string> {
-    return yield* pipe(
-      client.Setup({
-        pubkey: Option.map(maybeKey, k => k.pubkey),
-        credentialId: Option.map(maybeKey, k => k.credentialId),
-        username: ghUser.login,
-      }),
-      Effect.mapError(e => `${GitSetupError.AgentProcedureFailedError}: ${String(e)}`)
-    );
-  });
+  // 6. Call agent to get/create/verify key (starts agent if not running)
+  const { credentialId, pubkey } = yield* pipe(
+    Effect.gen(() => agentClient.usingClient(function* (client): EffectGen<{ pubkey: string; credentialId: string }, string> {
+      return yield* pipe(
+        client.Setup({
+          pubkey: Option.map(maybeKey, k => k.pubkey),
+          credentialId: Option.map(maybeKey, k => k.credentialId),
+          username: ghUser.login,
+        }),
+        Effect.mapError(e => `${GitSetupError.AgentProcedureFailedError}: ${String(e)}`)
+      );
+    })),
+    Effect.catchTag("AgentClientError", err => Effect.fail(err.reason)),
+    Effect.catchTag("AgentClientUsageError", err => Effect.fail(err.cause))
+  );
   const credentialFriendlyName = new CredentialId(credentialId).humanReadableName;
   const keyTitle = `${credentialFriendlyName} (${credentialId})`;
 

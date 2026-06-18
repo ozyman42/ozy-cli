@@ -9,9 +9,10 @@ import { commonModules } from "@/modules/common";
 import { SessionError, type ISession, type SetupInput, SetupOutput, StartSessionInput, type SignInput } from "./interface";
 import { AgentRpcGroup } from "./interface-rpc";
 import { prfFlow, PrfInput, type PrfResult } from "./prf-flow";
-import { AGENT_PORT, CURRENT_VERSION, DEFAULT_SESSION_TIMEOUT_SECONDS } from "@/common/constants";
-import { HttpRouter } from "effect/unstable/http";
+import { AGENT_PORT_FILE_PATH, CURRENT_VERSION, DEFAULT_SESSION_TIMEOUT_SECONDS } from "@/common/constants";
+import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { RpcServer, RpcSerialization } from "effect/unstable/rpc";
+import { writeFileSync } from "node:fs";
 import { using } from "@/common/effective-modules-extensions";
 
 export interface ActiveSession {
@@ -300,16 +301,28 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
     return { pubkey: derivedPubkey, credentialId: derivedCredentialId.base58 };
   }
 
-  public static RpcLayerLive = pipe(
-    RpcServer.layerHttp({ group: AgentRpcGroup, path: "/rpc", protocol: "http" }),
-    Layer.provideMerge(AgentRpcGroup.toLayer({
-      GetVersion: () => Effect.succeed({ version: CURRENT_VERSION }),
-      StartSession: using(Session).startSession,
-      Setup: using(Session).setup,
-    })),
-    HttpRouter.serve,
-    Layer.provideMerge(BunHttpServer.layer({ port: AGENT_PORT })),
-    Layer.provideMerge(RpcSerialization.layerJson),
-    Layer.provideMerge(this.Layer)
-  )
+  public static makeRpcLayer() {
+    const writePortFile = Layer.effectDiscard(
+      Effect.gen(function* () {
+        const server = yield* HttpServer.HttpServer;
+        if (server.address._tag !== "TcpAddress") {
+          return Effect.die(`Invariant server address of ${JSON.stringify(server.address)}`);
+        }
+        writeFileSync(AGENT_PORT_FILE_PATH, server.address.port.toString());
+      })
+    );
+    return pipe(
+      RpcServer.layerHttp({ group: AgentRpcGroup, path: "/rpc", protocol: "http" }),
+      Layer.provideMerge(AgentRpcGroup.toLayer({
+        GetVersion: () => Effect.succeed({ version: CURRENT_VERSION }),
+        StartSession: using(Session).startSession,
+        Setup: using(Session).setup,
+      })),
+      HttpRouter.serve,
+      Layer.provideMerge(writePortFile),
+      Layer.provideMerge(BunHttpServer.layer({ port: 0 })),
+      Layer.provideMerge(RpcSerialization.layerJson),
+      Layer.provideMerge(this.Layer)
+    );
+  }
 }

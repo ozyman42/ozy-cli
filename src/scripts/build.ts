@@ -101,7 +101,7 @@ const platformVersion = \`\${PKG_VERSION}-\${platformKey}.0\`;
 const tarballUrl = \`https://registry.npmjs.org/\${PKG_NAME}/-/\${pkgBaseName}-\${platformVersion}.tgz\`;
 const isWindows = platformKey.startsWith('windows-');
 
-log(\`Initial run. Fetching all package binaries (\${ALL_CMDS.join(", ")}) from \${tarballUrl}\`);
+log(\`Fetching all \${platformKey} platform binaries (\${ALL_CMDS.join(", ")})\\nfrom \${tarballUrl}\`);
 
 try {
   const response = await fetch(tarballUrl);
@@ -122,16 +122,16 @@ try {
     const mb = (downloaded / 1024 / 1024).toFixed(1);
     if (contentLength) {
       const pct = Math.round(downloaded / contentLength * 100);
-      process.stderr.write(\`\\rdownloading... \${pct}% (\${mb}MB/\${totalMb}MB)  \`);
+      process.stderr.write(\`\\rdownloading... \${pct}% (\${mb}MB/\${totalMb}MB)                   \`);
     } else {
-      process.stderr.write(\`\\rdownloading... \${mb}MB  \`);
+      process.stderr.write(\`\\rdownloading... \${mb}MB                   \`);
     }
   }
-  process.stderr.write(\`\\rdownloading... Done. (\${totalMb}MB)\`);
+  process.stderr.write(\`\\rdownloading... 100% (\${totalMb}MB)                   \`);
   process.stderr.write('\\n');
   const buffer = Buffer.concat(chunks.map(c => Buffer.from(c)));
 
-  const tempDir = mkdtempSync(join(tmpdir(), 'ozy-install-'));
+  const tempDir = mkdtempSync(join(tmpdir(), \`\${PKG_NAME}-install-\`));
   try {
     const extractResult = spawnSync('tar', ['-xzf', '-', '-C', tempDir], {
       input: buffer,
@@ -146,7 +146,6 @@ try {
       const src = join(tempDir, 'package', 'dist', c + (isWindows ? '.exe' : ''));
       const dest = join(INSTALL_DIR, c + (isWindows ? '.exe' : ''));
       const content = readFileSync(src);
-      log(\`installing \${c} (\${content.length} bytes) → \${dest}\`);
       writeFileSync(dest, content);
       chmodSync(dest, 0o755);
     }
