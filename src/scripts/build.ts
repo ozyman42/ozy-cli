@@ -114,6 +114,9 @@ try {
   const chunks = [];
   let downloaded = 0;
   const totalMb = (contentLength / 1024 / 1024).toFixed(1);
+  function clearLine() {
+    process.stderr.write(\`\\r                                        \`);
+  }
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -122,12 +125,15 @@ try {
     const mb = (downloaded / 1024 / 1024).toFixed(1);
     if (contentLength) {
       const pct = Math.round(downloaded / contentLength * 100);
-      process.stderr.write(\`\\rdownloading... \${pct}% (\${mb}MB/\${totalMb}MB)                   \`);
+      clearLine();
+      process.stderr.write(\`\\rdownloading... \${pct.toString().padStart(3, " ")}% (\${mb}MB/\${totalMb}MB)\`);
     } else {
-      process.stderr.write(\`\\rdownloading... \${mb}MB                   \`);
+      clearLine();
+      process.stderr.write(\`\\rdownloading... \${mb}MB\`);
     }
   }
-  process.stderr.write(\`\\rdownloading... 100% (\${totalMb}MB)                   \`);
+  clearLine();
+  process.stderr.write(\`\\rdownloading... 100% (\${totalMb}MB)\`);
   process.stderr.write('\\n');
   const buffer = Buffer.concat(chunks.map(c => Buffer.from(c)));
 
