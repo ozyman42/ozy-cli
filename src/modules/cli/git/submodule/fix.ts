@@ -4,6 +4,7 @@ import { resolve, join, dirname, relative } from "node:path";
 import { Effect } from "effect";
 import type { Gitmodules } from "./gitmodules";
 import type { ModuleDirInfo, IndexGitlink } from "./git-state";
+import { resolveGitDir } from "./resolve-git-dir";
 
 export interface Fix {
   location: string[];
@@ -11,7 +12,39 @@ export interface Fix {
   detail?: string;
 }
 
-function removeExtraConfigSubmodules(content: string, validNames: Set<string>): { result: string; removed: string[] } {
+function parseConfigSubmoduleValues(content: string): Map<string, { url?: string; path?: string }> {
+  const entries = new Map<string, { url?: string; path?: string }>();
+  let current: { url?: string; path?: string } | null = null;
+
+  for (const line of content.split("\n")) {
+    const headerMatch = line.match(/^\[submodule "(.+)"\]$/);
+    if (headerMatch) {
+      current = {};
+      entries.set(headerMatch[1]!, current);
+      continue;
+    }
+    if (!current) continue;
+    const kvMatch = line.match(/^\s+(\w+)\s*=\s*(.+)$/);
+    if (!kvMatch) continue;
+    const [, key, value] = kvMatch;
+    if (key === "url" || key === "path") current[key] = value!.trim();
+  }
+
+  return entries;
+}
+
+// Drops any stanza whose name isn't a valid submodule, is a stale duplicate, or
+// has url/path values that no longer match .gitmodules — so it can be re-added fresh.
+function removeExtraConfigSubmodules(content: string, modules: Gitmodules): { result: string; removed: string[] } {
+  const byName = new Map(modules.list.map((m) => [m.name, m]));
+  const existingValues = parseConfigSubmoduleValues(content);
+
+  const staleNames = new Set<string>();
+  for (const [name, values] of existingValues) {
+    const m = byName.get(name);
+    if (!m || values.url !== m.url || values.path !== m.path) staleNames.add(name);
+  }
+
   const removed: string[] = [];
   const seen = new Set<string>();
   const output: string[] = [];
@@ -21,7 +54,7 @@ function removeExtraConfigSubmodules(content: string, validNames: Set<string>): 
     const submoduleMatch = line.match(/^\[submodule "(.+)"\]$/);
     if (submoduleMatch) {
       const name = submoduleMatch[1]!;
-      if (validNames.has(name) && !seen.has(name)) {
+      if (!staleNames.has(name) && !seen.has(name)) {
         seen.add(name);
         dropping = false;
       } else {
@@ -49,15 +82,15 @@ async function spawnGit(args: string[], cwd: string): Promise<void> {
 export function fixGitConfig(repoRoot: string, modules: Gitmodules): Effect.Effect<Fix[], string> {
   return Effect.tryPromise({
     try: async () => {
-      const configPath = resolve(repoRoot, ".git", "config");
+      const gitDir = await resolveGitDir(repoRoot);
+      const configPath = resolve(gitDir, "config");
       const content = await readFile(configPath, "utf8");
-      const validNames = new Set(modules.map((m) => m.name));
-      const { result: afterRemoval, removed } = removeExtraConfigSubmodules(content, validNames);
+      const { result: afterRemoval, removed } = removeExtraConfigSubmodules(content, modules);
 
       const existingNames = new Set<string>(
         [...afterRemoval.matchAll(/^\[submodule "(.+)"\]$/gm)].map((m) => m[1]!)
       );
-      const missing = modules.filter((m) => !existingNames.has(m.name));
+      const missing = modules.list.filter((m) => !existingNames.has(m.name));
 
       let result = afterRemoval;
       for (const m of missing) {
@@ -85,8 +118,8 @@ export function fixModuleDirs(
   return Effect.tryPromise({
     try: async () => {
       const fixes: Fix[] = [];
-      const modulesRoot = resolve(repoRoot, ".git", "modules");
-      const gmByPath = new Map(modules.map((m) => [m.path, m]));
+      const modulesRoot = resolve(await resolveGitDir(repoRoot), "modules");
+      const gmByPath = new Map(modules.list.map((m) => [m.path, m]));
 
       for (const d of moduleDirs) {
         const gm = gmByPath.get(d.relativePath);
@@ -101,7 +134,7 @@ export function fixModuleDirs(
         fixes.push({ location: [".git", "modules", ...rel.split("/")], action: "deleted" });
       }
 
-      for (const m of modules) {
+      for (const m of modules.list) {
         const workingTreeDir = resolve(repoRoot, m.path);
         const moduleGitDir = join(modulesRoot, m.path);
         const dotGit = join(workingTreeDir, ".git");
@@ -120,7 +153,7 @@ export function fixModuleDirs(
         if (!existsSync(moduleGitDir)) {
           await mkdir(dirname(moduleGitDir), { recursive: true });
           await spawnGit(["clone", "--bare", m.url, moduleGitDir], repoRoot);
-          const configFile = `.git/modules/${m.path}/config`;
+          const configFile = join(moduleGitDir, "config");
           const worktree = relative(moduleGitDir, workingTreeDir);
           await spawnGit(["config", "-f", configFile, "core.bare", "false"], repoRoot);
           await spawnGit(["config", "-f", configFile, "core.worktree", worktree], repoRoot);
@@ -134,10 +167,10 @@ export function fixModuleDirs(
         fixes.push({ location: [...m.path.split("/"), ".git"], action: "synced" });
       }
 
-      for (const m of modules) {
+      for (const m of modules.list) {
         const moduleGitDir = join(modulesRoot, m.path);
         if (!existsSync(moduleGitDir)) continue;
-        const configFile = `.git/modules/${m.path}/config`;
+        const configFile = join(moduleGitDir, "config");
 
         const readConfig = (key: string) =>
           Bun.spawn(["git", "config", "-f", configFile, key], { cwd: repoRoot, stdout: "pipe", stderr: "pipe" });
@@ -175,7 +208,7 @@ export function fixIndexGitlinks(
       const currentShas = new Map(currentIndex.map((e) => [e.path, e.commit]));
       const fixes: Fix[] = [];
 
-      for (const m of modules) {
+      for (const m of modules.list) {
         const workingTree = resolve(repoRoot, m.path);
         if (!existsSync(workingTree)) continue;
 

@@ -9,11 +9,12 @@ import { GitHubImpl } from '@/modules/cli/github/impl';
 import { AgentClientImpl } from '@/modules/cli/agent-client/impl';
 import { OSPlatformImpl } from '@/modules/common/os-platform/impl';
 import { SSHConfigImpl } from '@/modules/common/ssh-config/impl';
-import { AGENT_SOCK_FILE_PATH, FUTURE_TOOL_NAME, SSH_KEYGEN_CMD_PATH } from '../../common/constants';
+import { AGENT_SOCK_FILE_PATH, FUTURE_TOOL_NAME, STANDARD_REMOTE_PREFIX } from '../../common/constants';
 import { CredentialId } from '@/modules/common/crypto/impl';
 import { BunFileSystem } from "@effect/platform-bun";
 import { using } from '@/common/effective-modules-extensions';
 import { AgentModules } from '@/modules/ssh-agent';
+import type { GitUser } from '@/modules/cli/git/interface';
 
 type AllModules = CLIModules.Git | CLIModules.GitHub | CLIModules.AgentClient | CommonModules.SSHConfig;
 
@@ -64,8 +65,9 @@ function* gitSetup(ownerRepoArg?: string): Effect.fn.Return<void, string, AllMod
   log('✓ Authorized with GitHub');
 
   // 3. Fetch user info
-  const ghUser = yield* github.getUser(token);
-  log(`  Logged in as: ${ghUser.login} <${ghUser.email}>`);
+  const { login, email } = yield* github.getUser(token);
+  const gitUser: GitUser = {name: login, email: email};
+  log(`  Logged in as: ${gitUser.name} <${gitUser.email}>`);
 
   // 4. Check GitHub signing keys for <tool name>: prefix
   const signingKeys = yield* github.getSigningKeys(token);
@@ -102,7 +104,7 @@ function* gitSetup(ownerRepoArg?: string): Effect.fn.Return<void, string, AllMod
         client.Setup({
           pubkey: Option.map(maybeKey, k => k.pubkey),
           credentialId: Option.map(maybeKey, k => k.credentialId),
-          username: ghUser.login,
+          username: login,
         }),
         Effect.mapError(e => `${GitSetupError.AgentProcedureFailedError}: ${String(e)}`)
       );
@@ -143,21 +145,14 @@ function* gitSetup(ownerRepoArg?: string): Effect.fn.Return<void, string, AllMod
     log(`✓ Cloned into ${repo}/`);
   }
 
-  // 12. Set local git config
-  const gitConfigs: [string, string][] = [
-    ['remote.origin.url', `git@github.com:${owner}/${repo}.git`],
-    ['user.name', ghUser.login],
-    ['user.email', ghUser.email],
-    ['user.signingkey', pubkeyPath],
-    ['gpg.format', 'ssh'],
-    ['gpg.ssh.program', SSH_KEYGEN_CMD_PATH],
-    ['commit.gpgsign', 'true'],
-    ['tag.gpgsign', 'true'],
-  ];
+  // 12. Set repo config plus any submodules' config
   log('\nSetting git config:');
-  for (const [k, v] of gitConfigs) {
-    yield* git.setLocalConfig(k, v);
-  }
+  yield* git.setupRepo({
+    dir: process.cwd(),
+    remoteURL: `${STANDARD_REMOTE_PREFIX}${owner}/${repo}.git`,
+    user: gitUser,
+    pubkeyPath,
+  });
 
   log(`\n✓ Setup complete for ${owner}/${repo}`);
 }

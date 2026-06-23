@@ -1,5 +1,5 @@
 import type { Gitmodules } from "./gitmodules";
-import type { GitState } from "./git-state";
+import type { GitState, ModuleDirInfo, IndexGitlink, WorkingTreeGitEntry } from "./git-state";
 import type { Fix } from "./fix";
 
 const RED = "\x1b[31m";
@@ -72,24 +72,24 @@ export function printSyncState(modules: Gitmodules, state: GitState): void {
   const byPath = new Map(state.moduleDirs.map((d) => [d.relativePath, d]));
   const byIndexPath = new Map(state.index.map((i) => [i.path, i]));
   const byTreePath = new Map(state.workingTree.map((w) => [w.path, w]));
-  const modulePaths = new Set(modules.map((m) => m.path));
-  const moduleNames = new Set(modules.map((m) => m.name));
+  const modulePaths = new Set(modules.list.map((m) => m.path));
+  const moduleNames = new Set(modules.list.map((m) => m.name));
 
-  console.log("=== submodules ===");
+  console.log("=== syncing submodules ===");
 
-  for (const m of modules) {
+  for (const m of modules.list) {
     const cfg = byName.get(m.name);
     const dir = byPath.get(m.path);
     const idx = byIndexPath.get(m.path);
     const wt = byTreePath.get(m.path);
     const headSha = typeof wt?.headCommit === "string" ? wt.headCommit : undefined;
 
-    console.log(`\n${BOLD}[${m.name}]${RESET}`);
-
     if (!moduleHasIssues(m, cfg, dir, idx, headSha, wt)) {
-      console.log(`└── ${ok}`);
+      console.log(`${BOLD}[${m.name}]${RESET} ${ok}`);
       continue;
     }
+
+    console.log(`${BOLD}[${m.name}]${RESET}`);
 
     // .gitmodules
     const gitmodulesNode: Line = {

@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { Effect, Option } from "effect";
+import { resolveGitDir } from "./resolve-git-dir";
 
 // --- types ---
 
@@ -173,7 +174,7 @@ async function readWorkingTreeEntry(repoRoot: string, subPath: string): Promise<
 export function readGitState(repoRoot: string, extraPaths: string[] = []): Effect.Effect<GitState, string> {
   return Effect.tryPromise({
     try: async () => {
-      const gitDir = resolve(repoRoot, ".git");
+      const gitDir = await resolveGitDir(repoRoot);
 
       const [configContent, lsOutput] = await Promise.all([
         readFile(resolve(gitDir, "config"), "utf8"),

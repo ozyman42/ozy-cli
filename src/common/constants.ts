@@ -19,3 +19,6 @@ export const SSH_KEYGEN_CMD_NAME = "ozy-ssh-keygen" satisfies keyof typeof bin;
 export const SSH_KEYGEN_CMD_PATH = path.resolve(CLI_DIR, SSH_KEYGEN_CMD_NAME);
 export const VIRTUAL_KEY_LOG_FILE_PATH = path.resolve(CLI_DIR, `${VIRTUAL_KEY_CMD_NAME}.log`);
 export const DEFAULT_SESSION_TIMEOUT_SECONDS = 120;
+export const STANDARD_REMOTE_USER = "git";
+export const STANDARD_REMOTE_HOST = "github.com";
+export const STANDARD_REMOTE_PREFIX = `${STANDARD_REMOTE_USER}@${STANDARD_REMOTE_HOST}:`;
