@@ -42,7 +42,7 @@ export const setup = makeCommand('setup', 'configure a new npm package for publi
     const { token: npmToken, user: npmUser } = yield* acquireToken().pipe(
       Effect.mapError(e => `${SetupError.NotLoggedIn}: npm authentication failed: ${e}`)
     );
-    log(`  ✓ logged in as ${npmUser}`);
+    log(`  ✓ logged into npm as ${npmUser}`);
 
     // 2. GitHub CLI
     log('checking GitHub...');
@@ -57,13 +57,11 @@ export const setup = makeCommand('setup', 'configure a new npm package for publi
     }
     if (ghUser.exitCode !== 0)
       yield* Effect.fail(`${SetupError.NotLoggedIn}: not logged into GitHub — run "gh auth login"`);
-    log(`  ✓ logged in as ${ghUser.stdout.toString().trim()}`);
+    log(`  ✓ logged into github as ${ghUser.stdout.toString().trim()}`);
 
     // 3. git repo root
-    log('checking git repo...');
     if (!existsSync(`${cwd}/.git`))
       yield* Effect.fail(`${SetupError.NoGitRepo}: current directory is not a git repository — run "git init" first`);
-    log('  ✓ git repo');
 
     // 4. package.json — read and fatal-check
     log('checking package.json...');

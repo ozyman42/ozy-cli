@@ -109,62 +109,122 @@ export function fixGitConfig(repoRoot: string, modules: Gitmodules): Effect.Effe
   });
 }
 
+const GIT_MODULES_MARKER = ".git/modules/";
+
+// A stale redirect's leading "../" prefix can be wrong after a path rename, but the
+// suffix starting at ".git/modules/" always describes a location under the single
+// top-level .git, at any nesting depth — so anchor on that marker instead of trusting
+// the relative resolution.
+function recoverStaleGitDirTarget(redirectContent: string, topLevelRoot: string): string | undefined {
+  const match = redirectContent.match(/^gitdir:\s*(.+)$/m);
+  if (!match) return undefined;
+  const idx = match[1]!.indexOf(GIT_MODULES_MARKER);
+  if (idx === -1) return undefined;
+  return resolve(topLevelRoot, match[1]!.slice(idx).trim());
+}
+
+// Moves existing git data into moduleGitDir instead of abandoning it, whether it's a
+// standalone clone's literal .git directory, or a redirect file (even a stale one
+// left over from a path rename) pointing at git data that still exists.
+async function migrateExistingGitDir(workingTreeDir: string, moduleGitDir: string, topLevelRoot: string): Promise<boolean> {
+  const dotGit = join(workingTreeDir, ".git");
+  if (!existsSync(dotGit)) return false;
+
+  if (statSync(dotGit).isDirectory()) {
+    await mkdir(dirname(moduleGitDir), { recursive: true });
+    await rename(dotGit, moduleGitDir);
+    return true;
+  }
+
+  const content = await readFile(dotGit, "utf8");
+  const target = recoverStaleGitDirTarget(content, topLevelRoot);
+  if (!target || target === moduleGitDir || !existsSync(target)) return false;
+  await mkdir(dirname(moduleGitDir), { recursive: true });
+  await rename(target, moduleGitDir);
+  return true;
+}
+
 export function fixModuleDirs(
   repoRoot: string,
   modules: Gitmodules,
   moduleDirs: ModuleDirInfo[],
   orphanModuleDirs: string[],
+  topLevelRoot: string,
 ): Effect.Effect<Fix[], string> {
   return Effect.tryPromise({
     try: async () => {
       const fixes: Fix[] = [];
       const modulesRoot = resolve(await resolveGitDir(repoRoot), "modules");
+
+      // Establish each module's git dir (migrating existing data if any exists
+      // anywhere) before the orphan cleanup below runs, so nothing real gets deleted
+      // out from under a path rename.
+      for (const m of modules.list) {
+        const workingTreeDir = resolve(repoRoot, m.path);
+        const moduleGitDir = join(modulesRoot, m.path);
+        if (!existsSync(workingTreeDir)) continue;
+
+        const alreadyEstablished = existsSync(moduleGitDir);
+        let freshlyCloned = false;
+
+        if (!alreadyEstablished) {
+          const migrated = await migrateExistingGitDir(workingTreeDir, moduleGitDir, topLevelRoot);
+          if (migrated) {
+            fixes.push({ location: [".git", "modules", ...m.path.split("/")], action: "synced", detail: "migrated" });
+          } else {
+            await mkdir(dirname(moduleGitDir), { recursive: true });
+            await spawnGit(["clone", "--bare", m.url, moduleGitDir], repoRoot);
+            fixes.push({ location: [".git", "modules", ...m.path.split("/")], action: "synced", detail: "initialized" });
+            freshlyCloned = true;
+          }
+        }
+
+        if (freshlyCloned) {
+          const configFile = join(moduleGitDir, "config");
+          const worktree = relative(moduleGitDir, workingTreeDir);
+          await spawnGit(["config", "-f", configFile, "core.bare", "false"], repoRoot);
+          await spawnGit(["config", "-f", configFile, "core.worktree", worktree], repoRoot);
+        }
+
+        // A bare clone (whether just made above, or left over from a prior buggy
+        // run) never gets an index — populate it from HEAD whenever it's missing,
+        // not only right after we ourselves created it.
+        if (!existsSync(join(moduleGitDir, "index"))) {
+          const headCheck = Bun.spawn(["git", "--git-dir", moduleGitDir, "rev-parse", "--verify", "HEAD"], { stdout: "ignore", stderr: "ignore" });
+          if ((await headCheck.exited) !== 0) await spawnGit(["--git-dir", moduleGitDir, "fetch", "origin"], repoRoot);
+          await spawnGit(["--git-dir", moduleGitDir, "read-tree", "HEAD"], repoRoot);
+          fixes.push({ location: [".git", "modules", ...m.path.split("/")], action: "synced", detail: "populated index" });
+        }
+
+        // Always re-point the working tree's .git redirect — never assume an
+        // existing file is already correct.
+        const dotGit = join(workingTreeDir, ".git");
+        const rel = relative(workingTreeDir, moduleGitDir);
+        const desired = `gitdir: ${rel}\n`;
+        const current = existsSync(dotGit) && !statSync(dotGit).isDirectory()
+          ? await readFile(dotGit, "utf8")
+          : undefined;
+        if (current !== desired) {
+          await writeFile(dotGit, desired, "utf8");
+          fixes.push({ location: [...m.path.split("/"), ".git"], action: "synced" });
+        }
+      }
+
       const gmByPath = new Map(modules.list.map((m) => [m.path, m]));
 
       for (const d of moduleDirs) {
         const gm = gmByPath.get(d.relativePath);
-        if (!gm) {
+        if (!gm && existsSync(join(modulesRoot, d.relativePath))) {
           await rm(join(modulesRoot, d.relativePath), { recursive: true, force: true });
           fixes.push({ location: [".git", "modules", ...d.relativePath.split("/")], action: "deleted" });
         }
       }
 
       for (const rel of orphanModuleDirs) {
-        await rm(join(modulesRoot, rel), { recursive: true, force: true });
-        fixes.push({ location: [".git", "modules", ...rel.split("/")], action: "deleted" });
-      }
-
-      for (const m of modules.list) {
-        const workingTreeDir = resolve(repoRoot, m.path);
-        const moduleGitDir = join(modulesRoot, m.path);
-        const dotGit = join(workingTreeDir, ".git");
-        if (!existsSync(workingTreeDir)) continue;
-
-        if (existsSync(dotGit) && statSync(dotGit).isDirectory()) {
-          if (existsSync(moduleGitDir)) continue;
-          await mkdir(dirname(moduleGitDir), { recursive: true });
-          await rename(dotGit, moduleGitDir);
-          const rel = relative(workingTreeDir, moduleGitDir);
-          await writeFile(dotGit, `gitdir: ${rel}\n`, "utf8");
-          fixes.push({ location: [...m.path.split("/"), ".git"], action: "synced", detail: "migrated standalone .git" });
-          continue;
+        if (existsSync(join(modulesRoot, rel))) {
+          await rm(join(modulesRoot, rel), { recursive: true, force: true });
+          fixes.push({ location: [".git", "modules", ...rel.split("/")], action: "deleted" });
         }
-
-        if (!existsSync(moduleGitDir)) {
-          await mkdir(dirname(moduleGitDir), { recursive: true });
-          await spawnGit(["clone", "--bare", m.url, moduleGitDir], repoRoot);
-          const configFile = join(moduleGitDir, "config");
-          const worktree = relative(moduleGitDir, workingTreeDir);
-          await spawnGit(["config", "-f", configFile, "core.bare", "false"], repoRoot);
-          await spawnGit(["config", "-f", configFile, "core.worktree", worktree], repoRoot);
-          fixes.push({ location: [".git", "modules", ...m.path.split("/")], action: "synced", detail: "initialized" });
-          continue;
-        }
-
-        if (existsSync(dotGit)) continue;
-        const rel = relative(workingTreeDir, moduleGitDir);
-        await writeFile(dotGit, `gitdir: ${rel}\n`, "utf8");
-        fixes.push({ location: [...m.path.split("/"), ".git"], action: "synced" });
       }
 
       for (const m of modules.list) {
@@ -206,7 +266,15 @@ export function fixIndexGitlinks(
   return Effect.tryPromise({
     try: async () => {
       const currentShas = new Map(currentIndex.map((e) => [e.path, e.commit]));
+      const validPaths = new Set(modules.list.map((m) => m.path));
       const fixes: Fix[] = [];
+
+      for (const entry of currentIndex) {
+        if (!validPaths.has(entry.path)) {
+          await spawnGit(["update-index", "--force-remove", entry.path], repoRoot);
+          fixes.push({ location: [".git", "index"], action: "deleted", detail: entry.path });
+        }
+      }
 
       for (const m of modules.list) {
         const workingTree = resolve(repoRoot, m.path);

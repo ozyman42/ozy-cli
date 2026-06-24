@@ -95,7 +95,7 @@ export class GitImpl extends implementing(cliModules.Git).uses(commonModules.OSP
       catch: (e) => e instanceof Error ? e.message : String(e),
     });
   }
-  private *syncSubmoduleState(repoRoot: string): EffectGen<Gitmodules, string> {
+  private *syncSubmoduleState(repoRoot: string, topLevelRoot: string): EffectGen<Gitmodules, string> {
     const gitmodules = yield* Gitmodules.fromRepoRoot(repoRoot);
     if (gitmodules.list.length === 0) return gitmodules;
     const submodulePaths = gitmodules.list.map(m => m.path);
@@ -104,7 +104,7 @@ export class GitImpl extends implementing(cliModules.Git).uses(commonModules.OSP
     const fixResults = yield* Effect.all(
       [
         fixGitConfig(repoRoot, gitmodules),
-        fixModuleDirs(repoRoot, gitmodules, state.moduleDirs, state.orphanModuleDirs),
+        fixModuleDirs(repoRoot, gitmodules, state.moduleDirs, state.orphanModuleDirs, topLevelRoot),
         fixIndexGitlinks(repoRoot, gitmodules, state.index),
       ],
       { concurrency: "unbounded" },
@@ -113,18 +113,21 @@ export class GitImpl extends implementing(cliModules.Git).uses(commonModules.OSP
     return gitmodules;
   }
   *setupRepo(input: SetupRepoInput): EffectGen<void, string> {
+    yield* this.setupRepoAt(input, input.dir);
+  }
+  private *setupRepoAt(input: SetupRepoInput, topLevelRoot: string): EffectGen<void, string> {
     yield* this.configureRepo(input);
     if (!existsSync(resolve(input.dir, '.gitmodules'))) return;
-    const gitmodules = yield* this.syncSubmoduleState(input.dir);
+    const gitmodules = yield* this.syncSubmoduleState(input.dir, topLevelRoot);
     for (const m of gitmodules.list) {
       const subDir = resolve(input.dir, m.path);
       if (!existsSync(subDir)) continue;
-      yield* this.setupRepo({
+      yield* this.setupRepoAt({
         dir: subDir,
         remoteURL: m.url,
         user: input.user,
         pubkeyPath: input.pubkeyPath
-      });
+      }, topLevelRoot);
     }
   }
 }

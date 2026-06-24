@@ -17,6 +17,8 @@ const PKG = JSON.parse(readFileSync("package.json", "utf-8"));
 rmSync(OUTDIR, { recursive: true, force: true });
 mkdirSync(OUTDIR);
 
+// TODO: for a generic version of this perhaps go with the busybox pattern.
+
 const entrypoints = readdirSync("src/entrypoints")
   .filter(f => f.endsWith(SUFFIX))
   .map(f => `src/entrypoints/${f}`);
