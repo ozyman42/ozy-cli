@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: build (${{ matrix.platform }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
