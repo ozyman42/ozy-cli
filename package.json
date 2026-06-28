@@ -1,6 +1,6 @@
 {
   "name": "@ozyman42/ozy-cli",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Ozymandias' personal tools",
   "type": "module",
   "bin": {

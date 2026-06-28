@@ -68,9 +68,28 @@ function generateLauncher(cmd: string, allCmds: string[]): string {
   const pkgVersion: string = PKG.version;
   return `#!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { writeFileSync, chmodSync, mkdtempSync, rmSync, readFileSync } from 'fs';
+import { writeFileSync, chmodSync } from 'fs';
 import { dirname, join } from 'path';
-import { tmpdir } from 'os';
+import { gunzipSync } from 'zlib';
+
+function parseTar(buf) {
+  const entries = new Map();
+  let offset = 0;
+  while (offset + 512 <= buf.length) {
+    const header = buf.subarray(offset, offset + 512);
+    if (header.every((b) => b === 0)) break;
+    const name = header.subarray(0, 100).toString('utf8').replace(/\\0.*$/, '');
+    const sizeStr = header.subarray(124, 136).toString('utf8').replace(/\\0.*$/, '').trim();
+    const size = parseInt(sizeStr, 8) || 0;
+    const typeflag = String.fromCharCode(header[156]);
+    offset += 512;
+    if ((typeflag === '0' || typeflag === '\\0') && name) {
+      entries.set(name, buf.subarray(offset, offset + size));
+    }
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return entries;
+}
 
 const SELF = process.argv[1];
 const INSTALL_DIR = dirname(SELF);
@@ -139,26 +158,18 @@ try {
   process.stderr.write('\\n');
   const buffer = Buffer.concat(chunks.map(c => Buffer.from(c)));
 
-  const tempDir = mkdtempSync(join(tmpdir(), \`\${pkgBaseName}-install-\`));
-  try {
-    const extractResult = spawnSync('tar', ['-xzf', '-', '-C', tempDir], {
-      input: buffer,
-      maxBuffer: 256 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'inherit'],
-    });
-    if (extractResult.status !== 0) {
-      log(\`tar extraction failed (status \${extractResult.status})\`);
+  const entries = parseTar(gunzipSync(buffer));
+  for (const c of ALL_CMDS) {
+    // tar entry names always use forward slashes, regardless of host OS
+    const tarPath = 'package/dist/' + c + (isWindows ? '.exe' : '');
+    const content = entries.get(tarPath);
+    if (!content) {
+      log(\`missing \${tarPath} in downloaded archive\`);
       process.exit(1);
     }
-    for (const c of ALL_CMDS) {
-      const src = join(tempDir, 'package', 'dist', c + (isWindows ? '.exe' : ''));
-      const dest = join(INSTALL_DIR, c + (isWindows ? '.exe' : ''));
-      const content = readFileSync(src);
-      writeFileSync(dest, content);
-      chmodSync(dest, 0o755);
-    }
-  } finally {
-    rmSync(tempDir, { recursive: true });
+    const dest = join(INSTALL_DIR, c + (isWindows ? '.exe' : ''));
+    writeFileSync(dest, content);
+    chmodSync(dest, 0o755);
   }
   process.stderr.write(\`Installed \${ALL_CMDS.join(', ')}\\n\`);
   const result = spawnSync(SELF, process.argv.slice(2), { stdio: 'inherit' });
