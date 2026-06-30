@@ -1,6 +1,6 @@
 {
   "name": "@ozyman42/ozy-cli",
-  "version": "0.4.3",
+  "version": "0.4.5",
   "description": "Ozymandias' personal tools",
   "type": "module",
   "bin": {
@@ -13,6 +13,10 @@
     "dist"
   ],
   "scripts": {
+    "jive:cicd:build": "bun src/scripts/build.ts",
+    "jive:cicd:unit-tests": "echo \"No unit tests at this time\"",
+    "jive:cicd:upload-artifacts": "echo \"No artifacts to upload\"",
+    "jive:cicd:deploy": "echo \"publishing to npm\"",
     "build": "bun src/scripts/kill-existing-agent.ts && bun src/scripts/build.ts",
     "prepublishOnly": "bun run build",
     "prepare": "[ \"$CI\" = \"true\" ] || lefthook install"
