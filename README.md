@@ -1,10 +1,6 @@
-If you need to generate a new private ssh key run
+Set up any git repo to use a passkey-based SSH key. Auto registers SSH authn and signing keys with github.
 
-`ssh-keygen -t ed25519 -C "your_email@example.com"`
-
-then add the pubkey as both an AuthN and signing key at https://github.com/settings/keys
-
-
+Also can be used to auto provision npm packages and set up trusted publishing.
 
 When ready update pipeline to include
 
