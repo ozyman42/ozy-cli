@@ -21,7 +21,9 @@ export class Gitmodules {
     private readonly repoRoot: string,
     private readonly modules: Submodule[],
     private readonly rawContent: string,
-  ) {}
+  ) {
+    this.path;
+  }
 
   public static *fromRepoRoot(repoRoot: string): EffectGen<Gitmodules, string> {
     const path = resolve(repoRoot, ".gitmodules");

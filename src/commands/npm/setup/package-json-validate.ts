@@ -46,7 +46,7 @@ export function validatePackageJson(pkg: Pkg): PackageJsonIssue[] {
     issues.push({ field: 'version', issue: 'missing — add a "version" field (e.g. "0.0.1")', fatal: true });
   }
 
-  if (!pkg.scripts?.build) {
+  if (!pkg.scripts?.['build']) {
     issues.push({ field: 'scripts.build', issue: 'missing — add a "build" script before running setup', fatal: true });
   }
 

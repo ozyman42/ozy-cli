@@ -12,8 +12,6 @@ import { SSHConfigImpl } from '@/modules/common/ssh-config/impl';
 import { AGENT_SOCK_FILE_PATH, FUTURE_TOOL_NAME, STANDARD_REMOTE_PREFIX } from '../../common/constants';
 import { CredentialId } from '@/modules/common/crypto/impl';
 import { BunFileSystem } from "@effect/platform-bun";
-import { using } from '@/common/effective-modules-extensions';
-import { AgentModules } from '@/modules/ssh-agent';
 import type { GitUser } from '@/modules/cli/git/interface';
 
 type AllModules = CLIModules.Git | CLIModules.GitHub | CLIModules.AgentClient | CommonModules.SSHConfig;

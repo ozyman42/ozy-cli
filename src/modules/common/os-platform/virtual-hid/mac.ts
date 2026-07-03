@@ -29,6 +29,7 @@ const kCFPropertyListImmutable = 0;
 
 // Kept at module scope to prevent GC while the virtual device is running
 let _vhidCallback: JSCallback | null = null;
+_vhidCallback;
 
 const fromPtr = (label: string, p: Pointer | null): Effect.Effect<Pointer, string> =>
   pipe(

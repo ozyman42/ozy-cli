@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { validatePackageJson } from './package-json-validate';
 import { parseGithubOwnerRepo } from './git-remote';
 import { workflowExists, createWorkflow } from './workflow';
+import { Option } from "effect";
 
 // ── validatePackageJson ──────────────────────────────────────────────────────
 
@@ -62,19 +63,19 @@ describe('validatePackageJson', () => {
 
 describe('parseGithubOwnerRepo', () => {
   test('parses https url', () => {
-    expect(parseGithubOwnerRepo('https://github.com/owner/repo.git')).toEqual({ owner: 'owner', repo: 'repo' });
+    expect(parseGithubOwnerRepo('https://github.com/owner/repo.git')).toEqual(Option.some({ owner: 'owner', repo: 'repo' }));
   });
 
   test('parses https url without .git', () => {
-    expect(parseGithubOwnerRepo('https://github.com/owner/repo')).toEqual({ owner: 'owner', repo: 'repo' });
+    expect(parseGithubOwnerRepo('https://github.com/owner/repo')).toEqual(Option.some({ owner: 'owner', repo: 'repo' }));
   });
 
   test('parses standard ssh url', () => {
-    expect(parseGithubOwnerRepo('git@github.com:owner/repo.git')).toEqual({ owner: 'owner', repo: 'repo' });
+    expect(parseGithubOwnerRepo('git@github.com:owner/repo.git')).toEqual(Option.some({ owner: 'owner', repo: 'repo' }));
   });
 
   test('parses ssh alias url', () => {
-    expect(parseGithubOwnerRepo('git@github-ozyman42:ozyman42/test.git')).toEqual({ owner: 'ozyman42', repo: 'test' });
+    expect(parseGithubOwnerRepo('git@github-ozyman42:ozyman42/test.git')).toEqual(Option.some({ owner: 'ozyman42', repo: 'test' }));
   });
 
   test('returns null for unrecognised url', () => {

@@ -67,13 +67,12 @@ export function addTrustedPublisher(
   name: string,
   ownerRepo: string,
   token: string,
-  environment = 'prod',
 ): Effect.Effect<{ alreadyConfigured: boolean; otp?: string }, string> {
   const encoded = encodePackageName(name);
   log('  setting up (may require 2FA)...');
   const body = JSON.stringify([{
     type: 'github',
-    claims: { repository: ownerRepo, workflow_ref: { file: 'publish.yml' }, environment },
+    claims: { repository: ownerRepo, workflow_ref: { file: 'pipeline.yml' } },
     permissions: ['createPackage'],
   }]);
   return Effect.tryPromise({

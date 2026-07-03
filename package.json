@@ -3,20 +3,11 @@
   "version": "0.4.5",
   "description": "Ozymandias' personal tools",
   "type": "module",
-  "bin": {
-    "ozy": "dist/ozy",
-    "ozy-signing-agent": "dist/ozy-signing-agent",
-    "ozy-virtual-security-key": "dist/ozy-virtual-security-key",
-    "ozy-ssh-keygen": "dist/ozy-ssh-keygen"
-  },
-  "files": [
-    "dist"
-  ],
   "scripts": {
     "jive:cicd:build": "bun src/scripts/build.ts",
-    "jive:cicd:unit-tests": "echo \"No unit tests at this time\"",
-    "jive:cicd:upload-artifacts": "echo \"Nothing to do.\"",
-    "jive:cicd:deploy": "bun src/scripts/publish.ts",
+    "jive:cicd:unit-tests": "echo \"No unit tests\"",
+    "jive:cicd:upload-artifacts": "bun src/scripts/publish.ts",
+    "jive:cicd:deploy": "echo \"No deployments\"",
     "build": "bun src/scripts/kill-existing-agent.ts && bun src/scripts/build.ts",
     "prepare": "[ \"$CI\" = \"true\" ] || lefthook install"
   },
@@ -28,7 +19,10 @@
     "@types/bs58": "^5.0.0",
     "@types/bun": "^1.3.14",
     "@types/expand-tilde": "^2.0.2",
-    "lefthook": "latest"
+    "@types/friendly-words": "^1.2.2",
+    "jsonc-parser": "^3.3.1",
+    "lefthook": "latest",
+    "typescript": "^5.9.3"
   },
   "repository": {
     "type": "git",

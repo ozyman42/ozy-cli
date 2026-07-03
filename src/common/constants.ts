@@ -1,11 +1,11 @@
 import * as path from "node:path";
-import { bin, version, name } from "../../package.json";
+import { version, name } from "../../package.json";
 
 export const PACKAGE_NAME = name;
 export const FUTURE_TOOL_NAME = "jive";
 const CLI_DIR = path.dirname(process.execPath);
-export const CLI_CMD_NAME = "ozy" satisfies keyof typeof bin;
-export const AGENT_CMD_NAME = "ozy-signing-agent" satisfies keyof typeof bin;
+export const CLI_CMD_NAME = "ozy";
+export const AGENT_CMD_NAME = "ozy-signing-agent";
 export const AGENT_CMD_PATH = path.resolve(CLI_DIR, AGENT_CMD_NAME);
 export const CLI_CMD_PATH = path.resolve(CLI_DIR, CLI_CMD_NAME);
 export const AGENT_SOCK_FILE_PATH = path.resolve(CLI_DIR, `${AGENT_CMD_NAME}.sock`);
@@ -14,8 +14,8 @@ export const AGENT_PID_FILE_PATH = path.resolve(CLI_DIR, `${AGENT_CMD_NAME}.pid`
 export const AGENT_PORT_FILE_PATH = path.resolve(CLI_DIR, `${AGENT_CMD_NAME}.port`);
 export const CRED_ID_COMMENT_PREFIX = 'credentialId:';
 export const CURRENT_VERSION = version;
-export const VIRTUAL_KEY_CMD_NAME = "ozy-virtual-security-key" satisfies keyof typeof bin;
-export const SSH_KEYGEN_CMD_NAME = "ozy-ssh-keygen" satisfies keyof typeof bin;
+export const VIRTUAL_KEY_CMD_NAME = "ozy-virtual-security-key";
+export const SSH_KEYGEN_CMD_NAME = "ozy-ssh-keygen";
 export const SSH_KEYGEN_CMD_PATH = path.resolve(CLI_DIR, SSH_KEYGEN_CMD_NAME);
 export const VIRTUAL_KEY_LOG_FILE_PATH = path.resolve(CLI_DIR, `${VIRTUAL_KEY_CMD_NAME}.log`);
 export const DEFAULT_SESSION_TIMEOUT_SECONDS = 120;
