@@ -19,6 +19,7 @@ import {
   type FormattingOptions,
   type ParseError,
 } from "jsonc-parser";
+import ejs from "ejs";
 
 /**
  * Jive library builder.
@@ -29,14 +30,14 @@ import {
  *   src/agents/*        Agent entrypoints, if present, included in the same multi-call binary.
  *
  * Generated base package:
- *   package.json        Stripped package manifest plus generated runtime install hook.
+ *   package.json        Stripped package manifest plus generated command launchers.
  *   src/                Source tree for package consumers.
  *   dist/               TypeScript-emitted library files, when a source entrypoint exists.
- *   multi-call.js       Generated JS launcher used by every bin before first install/run.
+ *   bin/<command>       Generated JS launcher that self-repairs to the platform multi-call executable.
  *
  * Generated platform packages:
  *   package.json        Same package name with platform-specific prerelease version and os/cpu.
- *   multi-call-binary   Native Bun-compiled multi-call executable.
+ *   multi-call-binary   Native Bun-compiled multi-call executable (`multi-call-binary.exe` on Windows).
  *
  * The dist folder contains only packed .tgz files. The file name is the npm dist-tag to publish:
  * latest.tgz for the base package and one <platform>.tgz per platform package.
@@ -54,8 +55,10 @@ const SOURCE_ENTRYPOINT = "src/index.ts";
 const SOURCE_SUFFIX = ".ts";
 const OUTDIR = "dist";
 const WORKDIR = "build-temp";
-const MULTI_CALL_JS = "multi-call.js";
 const MULTI_CALL_BINARY = "multi-call-binary";
+const WINDOWS_EXECUTABLE_SUFFIX = ".exe";
+const BIN_DIR = "bin";
+const COMMAND_LAUNCHER_TEMPLATE = "src/scripts/command-launcher.js.ejs";
 const TSCONFIG_INCLUDE = ["src/**/*.ts"];
 const TSCONFIG_EXCLUDE = [OUTDIR, "node_modules"];
 const JSONC_FORMATTING_OPTIONS = {
@@ -181,7 +184,7 @@ async function buildBasePackage(): Promise<void> {
 
   await cp(resolve(rootDir, "src"), resolve(packageDir, "src"), { recursive: true });
   if (hasCommandSources) {
-    await writeFile(resolve(packageDir, MULTI_CALL_JS), generateLauncher(), { mode: 0o755 });
+    await writeCommandLaunchers(packageDir);
   }
 
   await writePackageJson(packageDir, generateBasePackageJson());
@@ -192,7 +195,7 @@ async function buildPlatformPackage(platform: Platform): Promise<void> {
   const packageDir = resolve(workDir, platform.id);
   await mkdir(packageDir, { recursive: true });
 
-  const binaryPath = resolve(packageDir, MULTI_CALL_BINARY);
+  const binaryPath = resolve(packageDir, platformBinaryFile(platform));
   const buildResult = await Bun.build({
     entrypoints: [multiCallEntrypointPath],
     compile: {
@@ -203,14 +206,20 @@ async function buildPlatformPackage(platform: Platform): Promise<void> {
   });
   assertBuildSucceeded(buildResult, `compile ${platform.id} multi-call binary`);
 
-  const windowsBinaryPath = `${binaryPath}.exe`;
-  if (!(await pathExists(binaryPath)) && (await pathExists(windowsBinaryPath))) {
-    await rename(windowsBinaryPath, binaryPath);
-  }
   await chmod(binaryPath, 0o755);
 
   await writePackageJson(packageDir, generatePlatformPackageJson(platform));
   await packPackage(packageDir, platform.id);
+}
+
+async function writeCommandLaunchers(packageDir: string): Promise<void> {
+  const binDir = resolve(packageDir, BIN_DIR);
+  await mkdir(binDir, { recursive: true });
+
+  const launcher = await renderCommandLauncher();
+  await Promise.all(
+    commandSources.map(({ command }) => writeFile(resolve(binDir, command), launcher, { mode: 0o755 }))
+  );
 }
 
 function assertBuildSucceeded(result: Bun.BuildOutput, label: string): void {
@@ -356,13 +365,10 @@ function generateBasePackageJson(): Record<string, unknown> {
     };
   }
   const files = hasSourceEntrypoint ? ["dist", "src"] : [];
-  if (hasCommandSources) files.push(MULTI_CALL_JS);
+  if (hasCommandSources) files.push(BIN_DIR);
   if (files.length > 0) generated["files"] = files;
   if (hasCommandSources) {
-    generated["bin"] = Object.fromEntries(commandSources.map(({ command }) => [command, `./${MULTI_CALL_JS}`]));
-    generated["scripts"] = {
-      postinstall: `node ./${MULTI_CALL_JS}`,
-    };
+    generated["bin"] = generateBaseBinEntries();
   }
   if (packageJson["dependencies"]) generated["dependencies"] = packageJson["dependencies"];
   if (hasCommandSources) {
@@ -384,7 +390,7 @@ function generatePlatformPackageJson(platform: Platform): Record<string, unknown
     type: packageJson.type ?? "module",
     os: [platform.os],
     cpu: [platform.cpu],
-    files: [MULTI_CALL_BINARY],
+    files: [platformBinaryFile(platform)],
   };
 
   for (const key of ["description", "license", "repository", "publishConfig"] as const) {
@@ -401,6 +407,14 @@ function platformVersion(platform: Platform): string {
 
 function platformAliasName(platform: Platform): string {
   return `${packageJson.name}-${platform.id}`;
+}
+
+function platformBinaryFile(platform: Platform): string {
+  return platform.os === "win32" ? `${MULTI_CALL_BINARY}${WINDOWS_EXECUTABLE_SUFFIX}` : MULTI_CALL_BINARY;
+}
+
+function generateBaseBinEntries(): Record<string, string> {
+  return Object.fromEntries(commandSources.map(({ command }) => [command, `./${BIN_DIR}/${command}`]));
 }
 
 async function packPackage(packageDir: string, tag: string): Promise<void> {
@@ -427,6 +441,8 @@ function generateMultiCallEntrypoint(dispatcherPath: string): string {
 
   return `import { basename } from "node:path";
 
+console.log("multi-call argv", JSON.stringify({ argv0: process.argv0, argv: process.argv }));
+
 const commandLoaders: Record<string, () => Promise<unknown>> = {
 ${loaders}
 };
@@ -444,83 +460,30 @@ await loadCommand();
 `;
 }
 
-function generateLauncher(): string {
+async function renderCommandLauncher(): Promise<string> {
   const platformMap = Object.fromEntries(
     PLATFORMS.map((platform) => [`${platform.os}-${platform.cpu}`, platform.id])
   );
   const platformPackages = Object.fromEntries(
     PLATFORMS.map((platform) => [platform.id, platformAliasName(platform)])
   );
-
-  return `#!/usr/bin/env node
-import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { basename, dirname, join } from "node:path";
-
-const require = createRequire(import.meta.url);
-const PLATFORM_MAP = ${JSON.stringify(platformMap, null, 2)};
-const PLATFORM_PACKAGES = ${JSON.stringify(platformPackages, null, 2)};
-const COMMANDS = new Set(${JSON.stringify(commandSources.map(({ command }) => command), null, 2)});
-const BINARY_FILE = ${JSON.stringify(MULTI_CALL_BINARY)};
-const LAUNCHER_FILE = ${JSON.stringify(MULTI_CALL_JS)};
-const targetPath = process.argv[1];
-const invokedFile = targetPath ? basename(targetPath) : "";
-const invokedCommand = invokedFile.replace(/\\.(?:exe|cmd|ps1)$/i, "");
-const shouldRunCommand = invokedFile !== LAUNCHER_FILE && COMMANDS.has(invokedCommand);
-
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
-
-function currentPlatformKey() {
-  const platformKey = PLATFORM_MAP[\`\${process.platform}-\${process.arch}\`];
-  if (!platformKey) {
-    fail(\`Unsupported platform: \${process.platform}-\${process.arch}\`);
-  }
-  return platformKey;
-}
-
-function resolvePlatformBinary() {
-  const platformKey = currentPlatformKey();
-  const packageName = PLATFORM_PACKAGES[platformKey];
-  if (!packageName) {
-    fail(\`No platform package is configured for \${platformKey}\`);
-  }
-
-  try {
-    const packageJsonPath = require.resolve(\`\${packageName}/package.json\`);
-    return join(dirname(packageJsonPath), BINARY_FILE);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    fail(\`Could not find optional dependency \${packageName}. Reinstall ${packageJson.name} with optional dependencies enabled.\\n\${detail}\`);
-  }
-}
-
-function installPlatformBinary() {
-  if (!targetPath) fail("Could not determine launcher path");
-
-  const platformBinary = resolvePlatformBinary();
-  copyFileSync(platformBinary, targetPath);
-  chmodSync(targetPath, 0o755);
-}
-
-console.log(\`Copying multi-call-binary for \${process.platform}-\${process.arch}\`);
-
-installPlatformBinary();
-
-if (!shouldRunCommand) {
-  process.exit(0);
-}
-
-const result = spawnSync(targetPath, process.argv.slice(2), { stdio: "inherit" });
-if (result.error) {
-  console.error(result.error.message);
-  process.exit(1);
-}
-process.exit(result.status ?? 1);
-`;
+  const platformBinaries = Object.fromEntries(
+    PLATFORMS.map((platform) => [platform.id, platformBinaryFile(platform)])
+  );
+  const commandNames = commandSources.map(({ command }) => command);
+  const template = await readFile(resolve(rootDir, COMMAND_LAUNCHER_TEMPLATE), "utf-8");
+  return ejs.render(
+    template,
+    {
+      commandNames,
+      json: (value: unknown) => JSON.stringify(value, null, 2),
+      platformBinaries,
+      platformMap,
+      platformPackages,
+      windowsExecutableSuffix: WINDOWS_EXECUTABLE_SUFFIX,
+    },
+    { async: false }
+  );
 }
 
 function toImportPath(path: string): string {

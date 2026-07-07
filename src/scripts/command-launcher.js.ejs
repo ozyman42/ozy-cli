@@ -1,0 +1,168 @@
+#!/usr/bin/env node
+import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const PLATFORM_MAP = <%- json(platformMap) %>;
+const PLATFORM_PACKAGES = <%- json(platformPackages) %>;
+const PLATFORM_BINARIES = <%- json(platformBinaries) %>;
+const COMMANDS = <%- json(commandNames) %>;
+const WINDOWS_EXECUTABLE_SUFFIX = <%- json(windowsExecutableSuffix) %>;
+const INSTALLED_JSON = "installed.json";
+
+const require = createRequire(import.meta.url);
+const launcherPath = fileURLToPath(import.meta.url);
+const launcherDir = dirname(launcherPath);
+const commandName = basename(launcherPath);
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+function currentPlatformKey() {
+  const platformKey = PLATFORM_MAP[`${process.platform}-${process.arch}`];
+  if (!platformKey) {
+    fail(`Unsupported platform: ${process.platform}-${process.arch}`);
+  }
+  return platformKey;
+}
+
+function currentPlatformPackageName() {
+  const platformKey = currentPlatformKey();
+  const packageName = PLATFORM_PACKAGES[platformKey];
+  if (!packageName) {
+    fail(`No platform package is configured for ${platformKey}`);
+  }
+  return packageName;
+}
+
+/**
+ * When a Jive library contains any number of CLIs (entrypoints or agents), then the base package
+ * will have an optional dependency for each possible architecture, with those platform-specific
+ * packages containing a platform build of the CLI.
+ * @returns the path to the platform binary and the exact version of the platform package.
+ */
+function currentPlatformPackage() {
+  const platformKey = currentPlatformKey();
+  const binaryFile = PLATFORM_BINARIES[platformKey];
+  if (!binaryFile) {
+    fail(`No platform binary is configured for ${platformKey}`);
+  }
+
+  const packageName = currentPlatformPackageName();
+  try {
+    const packageJsonPath = require.resolve(`${packageName}/package.json`);
+    const packageDir = dirname(packageJsonPath);
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    return {
+      binaryPath: join(packageDir, binaryFile),
+      version: packageJson.version,
+    };
+  } catch (error) {
+    fail(`Could not resolve optional platform package ${packageName}. Reinstall dependencies for ${process.platform}-${process.arch}.`);
+  }
+}
+
+function targetPathFor(command) {
+  const suffix = process.platform === "win32" ? WINDOWS_EXECUTABLE_SUFFIX : "";
+  return join(launcherDir, `${command}${suffix}`);
+}
+
+function installedJsonPath() {
+  return join(launcherDir, INSTALLED_JSON);
+}
+
+function windowsTargetsAreCurrent(version) {
+  if (process.platform !== "win32") return false;
+  if (!COMMANDS.every((command) => existsSync(targetPathFor(command)))) return false;
+
+  try {
+    const installed = JSON.parse(readFileSync(installedJsonPath(), "utf-8"));
+    return installed.version === version;
+  } catch {
+    return false;
+  }
+}
+
+function linkOrCopyFirstExecutable(sourcePath, targetPath) {
+  mkdirSync(dirname(targetPath), { recursive: true });
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp${process.platform === "win32" ? WINDOWS_EXECUTABLE_SUFFIX : ""}`;
+  rmSync(tempPath, { force: true });
+
+  try {
+    try {
+      linkSync(sourcePath, tempPath);
+    } catch {
+      copyFileSync(sourcePath, tempPath);
+    }
+
+    chmodSync(tempPath, 0o755);
+    rmSync(targetPath, { force: true });
+    renameSync(tempPath, targetPath);
+  } finally {
+    rmSync(tempPath, { force: true });
+  }
+}
+
+function hardLinkCommandTarget(sourcePath, targetPath) {
+  if (sourcePath === targetPath) return;
+
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp${process.platform === "win32" ? WINDOWS_EXECUTABLE_SUFFIX : ""}`;
+  rmSync(tempPath, { force: true });
+
+  try {
+    linkSync(sourcePath, tempPath);
+    chmodSync(tempPath, 0o755);
+    rmSync(targetPath, { force: true });
+    renameSync(tempPath, targetPath);
+  } finally {
+    rmSync(tempPath, { force: true });
+  }
+}
+
+function repairCommandTargets() {
+  const platformPackage = currentPlatformPackage();
+
+  if (windowsTargetsAreCurrent(platformPackage.version)) {
+    return targetPathFor(commandName);
+  }
+
+  const firstTargetPath = targetPathFor(COMMANDS[0]);
+  linkOrCopyFirstExecutable(platformPackage.binaryPath, firstTargetPath);
+
+  for (const command of COMMANDS.slice(1)) {
+    hardLinkCommandTarget(firstTargetPath, targetPathFor(command));
+  }
+
+  if (process.platform === "win32") {
+    writeFileSync(installedJsonPath(), `${JSON.stringify({ version: platformPackage.version }, null, 2)}\n`);
+  }
+
+  return targetPathFor(commandName);
+}
+
+function runExecutable(executablePath) {
+  const result = spawnSync(executablePath, process.argv.slice(2), { stdio: "inherit" });
+
+  if (result.error) {
+    fail(result.error.message);
+  }
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+}
+
+runExecutable(repairCommandTargets());
