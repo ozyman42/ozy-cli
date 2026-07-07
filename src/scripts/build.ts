@@ -440,9 +440,7 @@ function generateMultiCallEntrypoint(dispatcherPath: string): string {
     .join("\n");
 
   return `import { basename } from "node:path";
-
-console.log("multi-call argv", JSON.stringify({ argv0: process.argv0, argv: process.argv }));
-
+// console.log("multi-call argv", JSON.stringify({ argv0: process.argv0, argv: process.argv }));
 const commandLoaders: Record<string, () => Promise<unknown>> = {
 ${loaders}
 };
