@@ -205,7 +205,7 @@ export const upgrade = makeCommand("upgrade", `upgrade ${CLI_CMD_NAME} to the la
     const info = infoOption.value;
 
     const cmd = buildUpgradeCommand(info);
-    console.log(`Detected: ${info.pm} (${info.scope})`);
+    console.log(`Detected that ${PACKAGE_NAME} was installed ${info.scope}ly using ${info.pm}.`);
     console.log(`Running: ${cmd.join(" ")}`);
 
     const proc = Bun.spawn(cmd, {

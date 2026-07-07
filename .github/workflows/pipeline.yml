@@ -20,7 +20,7 @@ jobs:
     with:
       deploy-branches: |
         {
-          "main": ["Publish to NPM"]
+          "main": []
         }
       run-on-pull-requests: true
       enable-preview-deploys: false

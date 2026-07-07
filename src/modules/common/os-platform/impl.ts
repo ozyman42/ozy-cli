@@ -8,14 +8,19 @@ import { commonModules } from "@/modules/common";
 import { registerVirtualHID } from "./virtual-hid";
 import { log } from "@/common/log";
 
-const openCmd = process.platform === 'darwin' ? 'open'
-  : process.platform === 'linux' ? 'xdg-open'
-  : 'start';
-
 const isWindows = process.platform === 'win32';
 
+function openBrowserCommand(url: string): string[] {
+  if (process.platform === 'darwin') return ['open', url];
+  if (process.platform === 'linux') return ['xdg-open', url];
+  // `start` is a cmd.exe builtin. The empty string is the window title slot.
+  if (isWindows) ['cmd.exe', '/c', 'start', '', url];
+  // TODO: use exhaustive matching
+  throw new Error("Unknown platform");
+}
+
 function openBrowserWindow(url: string): Effect.Effect<void, never> {
-  return Effect.sync(() => { Bun.spawnSync([openCmd, url]); });
+  return Effect.sync(() => { Bun.spawnSync(openBrowserCommand(url)); });
 }
 
 function writeRestrictedFile(path: string, content: string): Effect.Effect<void, string> {

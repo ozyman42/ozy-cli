@@ -1,6 +1,6 @@
 {
   "name": "@ozyman42/ozy-cli",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "license": "MIT",
   "description": "Tools for setting up new packages, configuring with git & npm",
   "type": "module",
