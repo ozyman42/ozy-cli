@@ -19,13 +19,19 @@ const PLATFORM_MAP = <%- json(platformMap) %>;
 const PLATFORM_PACKAGES = <%- json(platformPackages) %>;
 const PLATFORM_BINARIES = <%- json(platformBinaries) %>;
 const COMMANDS = <%- json(commandNames) %>;
+const BIN_DIR = <%- json(binDir) %>;
+const INSTALL_SCRIPT = <%- json(installScript) %>;
+// Root install.js repairs command targets; bin launchers repair and then execute.
+const IS_INSTALL_SCRIPT = <%- json(isInstallScript) %>;
 const WINDOWS_EXECUTABLE_SUFFIX = <%- json(windowsExecutableSuffix) %>;
 const INSTALLED_JSON = "installed.json";
 
 const require = createRequire(import.meta.url);
 const launcherPath = fileURLToPath(import.meta.url);
 const launcherDir = dirname(launcherPath);
-const commandName = basename(launcherPath);
+const packageDir = IS_INSTALL_SCRIPT ? launcherDir : dirname(launcherDir);
+const commandTargetDir = join(packageDir, BIN_DIR);
+const rootInstallScriptPath = join(packageDir, INSTALL_SCRIPT);
 
 function fail(message) {
   console.error(message);
@@ -76,18 +82,18 @@ function currentPlatformPackage() {
   }
 }
 
-function targetPathFor(command) {
+function commandTargetPath(command) {
   const suffix = process.platform === "win32" ? WINDOWS_EXECUTABLE_SUFFIX : "";
-  return join(launcherDir, `${command}${suffix}`);
+  return join(commandTargetDir, `${command}${suffix}`);
 }
 
 function installedJsonPath() {
-  return join(launcherDir, INSTALLED_JSON);
+  return join(commandTargetDir, INSTALLED_JSON);
 }
 
 function windowsTargetsAreCurrent(version) {
   if (process.platform !== "win32") return false;
-  if (!COMMANDS.every((command) => existsSync(targetPathFor(command)))) return false;
+  if (!COMMANDS.every((command) => existsSync(commandTargetPath(command)))) return false;
 
   try {
     const installed = JSON.parse(readFileSync(installedJsonPath(), "utf-8"));
@@ -137,21 +143,19 @@ function repairCommandTargets() {
   const platformPackage = currentPlatformPackage();
 
   if (windowsTargetsAreCurrent(platformPackage.version)) {
-    return targetPathFor(commandName);
+    return;
   }
 
-  const firstTargetPath = targetPathFor(COMMANDS[0]);
+  const firstTargetPath = commandTargetPath(COMMANDS[0]);
   linkOrCopyFirstExecutable(platformPackage.binaryPath, firstTargetPath);
 
   for (const command of COMMANDS.slice(1)) {
-    hardLinkCommandTarget(firstTargetPath, targetPathFor(command));
+    hardLinkCommandTarget(firstTargetPath, commandTargetPath(command));
   }
 
   if (process.platform === "win32") {
     writeFileSync(installedJsonPath(), `${JSON.stringify({ version: platformPackage.version }, null, 2)}\n`);
   }
-
-  return targetPathFor(commandName);
 }
 
 function runExecutable(executablePath) {
@@ -165,4 +169,18 @@ function runExecutable(executablePath) {
   }
 }
 
-runExecutable(repairCommandTargets());
+function removeInstallScript() {
+  try {
+    rmSync(rootInstallScriptPath, { force: true });
+    // TODO: should we also remove the postinstall script line from package.json?
+  } catch {
+    // Cleanup is best-effort; failing to remove install.js should not fail package installation.
+  }
+}
+
+repairCommandTargets();
+removeInstallScript();
+if (!IS_INSTALL_SCRIPT) {
+  const commandName = basename(launcherPath);
+  runExecutable(commandTargetPath(commandName));
+}

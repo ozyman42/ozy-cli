@@ -1,0 +1,11 @@
+export const BIN_DIR = "bin";
+export const INSTALL_SCRIPT = "install.js";
+export const LICENSE_FILE = "LICENSE";
+export const MULTI_CALL_BINARY = "multi-call-binary";
+export const NPM_PACKAGE_SPEC = "npm@^11.5.1";
+export const OUTDIR = "dist";
+export const PUBLISH_ORDER_FILE = "publish-order.json";
+export const README_FILE = "README.md";
+export const TARBALL_EXTENSION = ".tgz";
+export const WINDOWS_EXECUTABLE_SUFFIX = ".exe";
+export const WORKDIR = "build-temp";

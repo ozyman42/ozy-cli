@@ -196,6 +196,39 @@ function buildUpgradeCommand(info: InstallInfo): string[] {
   return ["npm", "install", pkg];
 }
 
+function quotePowerShellString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function renderWindowsUpdaterCommand(cmd: string[], cwd: string, parentPid: number): string {
+  const command = cmd.map(quotePowerShellString).join(", ");
+  const commandDisplay = cmd.join(" ");
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "Write-Host 'Waiting for the current process to exit before upgrading...'",
+    `while (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 250 }`,
+    `Set-Location -LiteralPath ${quotePowerShellString(cwd)}`,
+    `Write-Host ${quotePowerShellString(`Running: ${commandDisplay}`)}`,
+    `$command = @(${command})`,
+    "$executable = $command[0]",
+    "$arguments = if ($command.Length -gt 1) { $command[1..($command.Length - 1)] } else { @() }",
+    "& $executable @arguments",
+    "exit $LASTEXITCODE",
+  ].join("; ");
+}
+
+function spawnWindowsUpdater(cmd: string[], cwd: string): void {
+  const updater = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", renderWindowsUpdaterCommand(cmd, cwd, process.pid)];
+  console.log("Spawning windows updater...");
+  const proc = Bun.spawn(updater, {
+    cwd,
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  proc.unref();
+}
+
 export const upgrade = makeCommand("upgrade", `upgrade ${CLI_CMD_NAME} to the latest version`, () =>
   Effect.gen(function* () {
     const binaryPath = CLI_CMD_PATH;
@@ -207,6 +240,14 @@ export const upgrade = makeCommand("upgrade", `upgrade ${CLI_CMD_NAME} to the la
     const cmd = buildUpgradeCommand(info);
     console.log(`Detected that ${PACKAGE_NAME} was installed ${info.scope}ly using ${info.pm}.`);
     console.log(`Running: ${cmd.join(" ")}`);
+
+    // Windows locks the running package-owned .exe, so asking the package manager to replace
+    // this package in-process can fail with EBUSY. A helper process waits for this process to
+    // exit, then runs the same install command outside the executable tree being replaced.
+    if (process.platform === "win32") {
+      spawnWindowsUpdater(cmd, info.cwd ?? process.cwd());
+      return;
+    }
 
     const proc = Bun.spawn(cmd, {
       cwd: info.cwd ?? process.cwd(),

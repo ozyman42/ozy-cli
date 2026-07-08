@@ -20,6 +20,19 @@ import {
   type ParseError,
 } from "jsonc-parser";
 import ejs from "ejs";
+import {
+  BIN_DIR,
+  INSTALL_SCRIPT,
+  LICENSE_FILE,
+  MULTI_CALL_BINARY,
+  NPM_PACKAGE_SPEC,
+  OUTDIR,
+  PUBLISH_ORDER_FILE,
+  README_FILE,
+  TARBALL_EXTENSION,
+  WINDOWS_EXECUTABLE_SUFFIX,
+  WORKDIR,
+} from "./constants";
 
 /**
  * Jive library builder.
@@ -39,8 +52,8 @@ import ejs from "ejs";
  *   package.json        Same package name with platform-specific prerelease version and os/cpu.
  *   multi-call-binary   Native Bun-compiled multi-call executable (`multi-call-binary.exe` on Windows).
  *
- * The dist folder contains only packed .tgz files. The file name is the npm dist-tag to publish:
- * latest.tgz for the base package and one <platform>.tgz per platform package.
+ * The dist folder contains packed .tgz files plus publish-order.json. The .tgz file name is the
+ * npm dist-tag to publish: latest.tgz for the base package and one <platform>.tgz per platform package.
  * 
  * Files in the following directories will be non importable from dependents
  *   src/entrypoints/*
@@ -53,11 +66,7 @@ const COMMAND_SOURCE_DIRS = ["src/entrypoints", "src/agents"] as const;
 const PRIVATE_SOURCE_DIRS = [...COMMAND_SOURCE_DIRS, "src/internal"] as const;
 const SOURCE_ENTRYPOINT = "src/index.ts";
 const SOURCE_SUFFIX = ".ts";
-const OUTDIR = "dist";
-const WORKDIR = "build-temp";
-const MULTI_CALL_BINARY = "multi-call-binary";
-const WINDOWS_EXECUTABLE_SUFFIX = ".exe";
-const BIN_DIR = "bin";
+const BASE_PACKAGE_ROOT_FILES = [README_FILE, LICENSE_FILE] as const;
 const COMMAND_LAUNCHER_TEMPLATE = "src/scripts/command-launcher.js.ejs";
 const TSCONFIG_INCLUDE = ["src/**/*.ts"];
 const TSCONFIG_EXCLUDE = [OUTDIR, "node_modules"];
@@ -106,6 +115,11 @@ type CommandSource = {
   readonly sourcePath: string;
 };
 
+type BasePackageRootFile = {
+  readonly fileName: string;
+  readonly sourcePath: string;
+};
+
 class TscFailed extends Error {
   constructor(readonly exitCode: number) {
     super(`tsc failed with exit code ${exitCode}`);
@@ -118,6 +132,7 @@ const workDir = resolve(outDir, WORKDIR);
 const multiCallEntrypointPath = resolve(workDir, "multi-call.ts");
 const packageJson = await readPackageJson();
 const commandSources = await collectCommandSources();
+const basePackageRootFiles = await collectBasePackageRootFiles();
 const sourceEntrypoint = resolve(rootDir, SOURCE_ENTRYPOINT);
 const hasSourceEntrypoint = await pathExists(sourceEntrypoint);
 const hasCommandSources = commandSources.length > 0;
@@ -134,8 +149,13 @@ try {
   await buildBasePackage();
 
   if (hasCommandSources) {
-    await Promise.all(PLATFORMS.map(buildPlatformPackage));
+    const platformPackages = await Promise.all(PLATFORMS.map(buildPlatformPackage));
+    for (const { packageDir, tag } of platformPackages) {
+      await packPackage(packageDir, tag);
+    }
   }
+
+  await writePublishOrder();
 } catch (error) {
   if (error instanceof TscFailed) {
     process.exitCode = error.exitCode;
@@ -187,11 +207,12 @@ async function buildBasePackage(): Promise<void> {
     await writeCommandLaunchers(packageDir);
   }
 
+  await copyBasePackageRootFiles(packageDir);
   await writePackageJson(packageDir, generateBasePackageJson());
   await packPackage(packageDir, "latest");
 }
 
-async function buildPlatformPackage(platform: Platform): Promise<void> {
+async function buildPlatformPackage(platform: Platform): Promise<{ packageDir: string; tag: string }> {
   const packageDir = resolve(workDir, platform.id);
   await mkdir(packageDir, { recursive: true });
 
@@ -209,17 +230,19 @@ async function buildPlatformPackage(platform: Platform): Promise<void> {
   await chmod(binaryPath, 0o755);
 
   await writePackageJson(packageDir, generatePlatformPackageJson(platform));
-  await packPackage(packageDir, platform.id);
+  return { packageDir, tag: platform.id };
 }
 
 async function writeCommandLaunchers(packageDir: string): Promise<void> {
   const binDir = resolve(packageDir, BIN_DIR);
   await mkdir(binDir, { recursive: true });
 
-  const launcher = await renderCommandLauncher();
-  await Promise.all(
-    commandSources.map(({ command }) => writeFile(resolve(binDir, command), launcher, { mode: 0o755 }))
-  );
+  const commandLauncher = await renderCommandLauncher(false);
+  const installLauncher = await renderCommandLauncher(true);
+  await Promise.all([
+    ...commandSources.map(({ command }) => writeFile(resolve(binDir, command), commandLauncher, { mode: 0o755 })),
+    writeFile(resolve(packageDir, INSTALL_SCRIPT), installLauncher, { mode: 0o755 }),
+  ]);
 }
 
 function assertBuildSucceeded(result: Bun.BuildOutput, label: string): void {
@@ -233,6 +256,29 @@ function assertBuildSucceeded(result: Bun.BuildOutput, label: string): void {
 
 async function writePackageJson(packageDir: string, value: Record<string, unknown>): Promise<void> {
   await writeFile(resolve(packageDir, "package.json"), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function collectBasePackageRootFiles(): Promise<readonly BasePackageRootFile[]> {
+  const files: BasePackageRootFile[] = [];
+  for (const fileName of BASE_PACKAGE_ROOT_FILES) {
+    const sourcePath = resolve(rootDir, fileName);
+    if (await pathExists(sourcePath)) files.push({ fileName, sourcePath });
+  }
+  return files;
+}
+
+async function copyBasePackageRootFiles(packageDir: string): Promise<void> {
+  await Promise.all(
+    basePackageRootFiles.map(({ fileName, sourcePath }) => cp(sourcePath, resolve(packageDir, fileName)))
+  );
+}
+
+async function writePublishOrder(): Promise<void> {
+  const orderedTarballs = [
+    ...(hasCommandSources ? PLATFORMS.map((platform) => tarballFileName(platform.id)) : []),
+    tarballFileName("latest"),
+  ];
+  await writeFile(resolve(outDir, PUBLISH_ORDER_FILE), `${JSON.stringify(orderedTarballs, null, 2)}\n`);
 }
 
 async function transpileLibrarySource(packageDir: string): Promise<void> {
@@ -364,10 +410,11 @@ function generateBasePackageJson(): Record<string, unknown> {
       },
     };
   }
-  const files = hasSourceEntrypoint ? ["dist", "src"] : [];
-  if (hasCommandSources) files.push(BIN_DIR);
+  const files = [...basePackageRootFiles.map(({ fileName }) => fileName), ...(hasSourceEntrypoint ? ["dist", "src"] : [])];
+  if (hasCommandSources) files.push(BIN_DIR, INSTALL_SCRIPT);
   if (files.length > 0) generated["files"] = files;
   if (hasCommandSources) {
+    generated["scripts"] = { postinstall: `node ./${INSTALL_SCRIPT}` };
     generated["bin"] = generateBaseBinEntries();
   }
   if (packageJson["dependencies"]) generated["dependencies"] = packageJson["dependencies"];
@@ -419,15 +466,19 @@ function generateBaseBinEntries(): Record<string, string> {
 
 async function packPackage(packageDir: string, tag: string): Promise<void> {
   const npmCacheDir = resolve(workDir, "npm-cache");
-  const output = await Bun.$`npm pack ${packageDir} --pack-destination ${outDir} --ignore-scripts --cache ${npmCacheDir} --loglevel error`.text();
+  const output = await Bun.$`bunx ${NPM_PACKAGE_SPEC} pack ${packageDir} --pack-destination ${outDir} --ignore-scripts --cache ${npmCacheDir} --loglevel error`.text();
   const generatedFile = output.trim().split("\n").at(-1);
   if (!generatedFile) throw new Error(`npm pack did not report an output file for ${packageDir}`);
 
   const sourcePath = resolve(outDir, generatedFile);
-  const taggedPath = resolve(outDir, `${tag}.tgz`);
+  const taggedPath = resolve(outDir, tarballFileName(tag));
   await rm(taggedPath, { force: true });
   await rename(sourcePath, taggedPath);
   console.log(`${packageDir} -> ${relative(rootDir, taggedPath)}`);
+}
+
+function tarballFileName(tag: string): string {
+  return `${tag}${TARBALL_EXTENSION}`;
 }
 
 function generateMultiCallEntrypoint(dispatcherPath: string): string {
@@ -446,7 +497,8 @@ ${loaders}
 };
 
 const invokedPath = process.argv0 || process.argv[1] || "";
-const command = basename(invokedPath).replace(/\\.(?:exe|cmd|ps1)$/i, "");
+const invokedName = basename(invokedPath);
+const command = process.platform === "win32" ? invokedName.replace(/\\.exe$/i, "") : invokedName;
 const loadCommand = commandLoaders[command];
 
 if (!loadCommand) {
@@ -458,7 +510,7 @@ await loadCommand();
 `;
 }
 
-async function renderCommandLauncher(): Promise<string> {
+async function renderCommandLauncher(isInstallScript: boolean): Promise<string> {
   const platformMap = Object.fromEntries(
     PLATFORMS.map((platform) => [`${platform.os}-${platform.cpu}`, platform.id])
   );
@@ -474,6 +526,9 @@ async function renderCommandLauncher(): Promise<string> {
     template,
     {
       commandNames,
+      binDir: BIN_DIR,
+      installScript: INSTALL_SCRIPT,
+      isInstallScript,
       json: (value: unknown) => JSON.stringify(value, null, 2),
       platformBinaries,
       platformMap,
