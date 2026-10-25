@@ -1,10 +1,10 @@
+import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { AGENT_PID_FILE_PATH } from "@/common/constants";
+import { AGENT_PID_FILE_NAME } from "@/common/constants";
 
-// Read from the one place the agent writes it. This used to resolve a path under dist/, which the agent
-// stopped using when its state moved to ~/.ozy to keep the socket under the 104-byte sun_path limit — so
-// the script had been silently finding nothing to kill.
-const pidFile = AGENT_PID_FILE_PATH;
+// The agent writes its pidfile beside its own binary. This script runs under `bun`, so the constants'
+// "beside the tool" would mean beside bun; the local build's binaries are in dist/base/bin.
+const pidFile = path.resolve(import.meta.dir, "../../dist/base/bin", AGENT_PID_FILE_NAME);
 
 function isProcessRunning(pid: number): boolean {
   try {

@@ -11,13 +11,13 @@ import { AGENT_LOG_FILE_PATH, AGENT_PID_FILE_PATH, AGENT_PORT_FILE_PATH, AGENT_S
 import { rmSync } from "node:fs";
 
 /**
- * Stand down if another agent already holds the socket.
+ * Stand down if another agent of this installed copy already holds the socket.
  *
- * One of these runs per installed copy of ozy-cli, because that is what decides how many daemons a Jive
- * package gets — but there is only one `~/.ozy/ozy-signing-agent.sock`, and only one of them can own it.
- * The loser exiting zero is what stops the service manager restarting it forever; it is also why this runs
- * before anything below, since the cleanup handler deletes those files unconditionally and a late exit
- * would take the incumbent's socket with it.
+ * Each installed copy has its own socket and pidfile, but one copy can still start two agents: its
+ * registered daemon, and the one `ozy git setup` spawns when it cannot reach an agent. Only one can own the
+ * socket. The loser exiting zero is what stops the service manager restarting it forever; it is also why
+ * this runs before anything below, since the cleanup handler deletes those files unconditionally and a late
+ * exit would take the incumbent's socket with it.
  */
 function incumbentAgentPid(): number | undefined {
   try {
