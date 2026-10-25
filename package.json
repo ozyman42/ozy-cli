@@ -1,7 +1,7 @@
 {
   "$schema": "./package.schema.json",
   "name": "@ozyman42/ozy-cli",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "license": "MIT",
   "description": "Tools for setting up new packages, configuring with git & npm",
   "type": "module",

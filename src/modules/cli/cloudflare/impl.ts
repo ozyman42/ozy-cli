@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import type { BrowserContext, Page } from "playwright-core";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "@/common/log";
@@ -49,6 +49,12 @@ export class CloudflareImpl extends implementing(cliModules.Cloudflare)
   implements ICloudflare {
 
   *createApiToken(request: ApiTokenRequest): EffectGen<ApiToken, string> {
+    // Loaded here, not at the top: playwright-core reads its own package.json at load time from the path
+    // it had on the build machine, so a top-level import crashed every ozy command in the compiled binary.
+    const { chromium } = yield* Effect.tryPromise({
+      try: () => import("playwright-core"),
+      catch: (cause) => `Could not load playwright-core: ${String(cause)}`,
+    });
     const context = yield* Effect.tryPromise({
       try: () => chromium.launchPersistentContext(profileDir(), {
         headless: false,
