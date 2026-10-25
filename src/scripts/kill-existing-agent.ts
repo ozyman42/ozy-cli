@@ -1,7 +1,10 @@
-import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { AGENT_PID_FILE_PATH } from "@/common/constants";
 
-const pidFile = path.resolve(import.meta.dir, "../../dist/ozy-signing-agent.pid");
+// Read from the one place the agent writes it. This used to resolve a path under dist/, which the agent
+// stopped using when its state moved to ~/.ozy to keep the socket under the 104-byte sun_path limit — so
+// the script had been silently finding nothing to kill.
+const pidFile = AGENT_PID_FILE_PATH;
 
 function isProcessRunning(pid: number): boolean {
   try {

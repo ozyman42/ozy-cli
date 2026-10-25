@@ -1,9 +1,10 @@
 import { Effect, Layer, Match, Option, pipe, Data, FileSystem, Schedule, Result } from "effect";
 import { effunct, implementing, type EffectGen } from "effective-modules";
-import { FetchHttpClient } from "effect/unstable/http";
-import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
+import { FetchHttpClient } from "effect/http";
+import { RpcClient, RpcSerialization } from "effect/rpc";
 import { AgentRpcGroup } from "@/modules/ssh-agent/session/interface-rpc";
 import { cliModules } from "..";
+import { commonModules } from "@/modules/common";
 import { type AgentRpcClient, type IAgentClient, AgentClientError } from "./interface";
 import { AGENT_CMD_PATH, AGENT_PID_FILE_PATH, AGENT_PORT_FILE_PATH, AGENT_SOCK_FILE_PATH, CURRENT_VERSION } from "@/common/constants";
 import { readFileSync, rmSync } from "node:fs";
@@ -32,7 +33,7 @@ class NonMatchingVersionError extends Data.TaggedError("NonMatchingVersionError"
 
 type PingError = NoResponseError | NonMatchingVersionError;
 
-export class AgentClientImpl extends implementing(cliModules.AgentClient).uses(FileSystem.FileSystem) implements IAgentClient {
+export class AgentClientImpl extends implementing(cliModules.AgentClient).uses(FileSystem.FileSystem, commonModules.OSPlatform) implements IAgentClient {
   private *readPortFromFile(): EffectGen<Option.Option<number>, never> {
     const result = yield* pipe(
       this.getDependency(FileSystem.FileSystem).readFileString(AGENT_PORT_FILE_PATH),
@@ -48,24 +49,25 @@ export class AgentClientImpl extends implementing(cliModules.AgentClient).uses(F
   }
 
   private *pingAtPort(port: number): EffectGen<void, PingError> {
+    function* requestVersion() {
+      const client = yield* RpcClient.make(AgentRpcGroup);
+      const { version } = yield* pipe(
+        client.GetVersion({}),
+        Effect.catchTag("RpcClientError", () => new NoResponseError())
+      );
+      if (version !== CURRENT_VERSION)
+        yield* new NonMatchingVersionError({ cliVersion: CURRENT_VERSION, agentVersion: version });
+    }
     yield* Effect.scoped(
-      Effect.gen(function* () {
-        const client = yield* RpcClient.make(AgentRpcGroup);
-        const { version } = yield* pipe(
-          client.GetVersion({}),
-          Effect.catchTag("RpcClientError", () => new NoResponseError())
-        );
-        if (version !== CURRENT_VERSION)
-          yield* new NonMatchingVersionError({ cliVersion: CURRENT_VERSION, agentVersion: version });
-      })
+      effunct(requestVersion)()
     ).pipe(Effect.provide(makeAgentClientLayer(port)));
   }
 
   private *ping(): EffectGen<{ port: number }, PingError> {
-    const portOption = yield* effunct(this.readPortFromFile)();
+    const portOption = yield* this.readPortFromFile();
     if (Option.isNone(portOption)) return yield* new NoResponseError();
     const port = portOption.value;
-    yield* effunct(this.pingAtPort)(port);
+    yield* this.pingAtPort(port);
     return { port };
   }
 
@@ -91,9 +93,13 @@ export class AgentClientImpl extends implementing(cliModules.AgentClient).uses(F
   }
 
   private *startAgent(): EffectGen<{ pid: number; port: number }, string | PingError> {
-    const proc = Bun.spawn([AGENT_CMD_PATH], { stdout: "ignore", stderr: "ignore" });
-    yield* effunct(this.waitForPidFile)(proc.pid);
-    const { port } = yield* effunct(this.ping)();
+    const proc = yield* this.dependencies.OSPlatform.spawnDetachedProcess({
+      command: AGENT_CMD_PATH,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    yield* this.waitForPidFile(proc.pid);
+    const { port } = yield* this.ping();
     log(`Started agent at PID ${proc.pid}`);
     return { pid: proc.pid, port };
   }
@@ -138,12 +144,13 @@ export class AgentClientImpl extends implementing(cliModules.AgentClient).uses(F
       effunct(this.ensureRunning)(),
       Effect.mapError(reason => new AgentClientError.ClientError({ reason }))
     );
+    function* useClient() {
+      const client = yield* RpcClient.make(AgentRpcGroup);
+      return yield* use(client);
+    }
     return yield* pipe(
       Effect.scoped(
-        Effect.gen(function* () {
-          const client = yield* RpcClient.make(AgentRpcGroup);
-          return yield* use(client);
-        })
+        effunct(useClient)()
       ),
       Effect.provide(makeAgentClientLayer(port)),
       Effect.mapError(e => new AgentClientError.UsageError({ cause: e }))

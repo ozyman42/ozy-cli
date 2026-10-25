@@ -1,7 +1,8 @@
 import { Effect } from "effect";
+import type { EffectGen } from "effective-modules";
 
-export function registerVirtualHIDLinux(
+export function* registerVirtualHIDLinux(
   _onMessage: (data: Buffer) => Effect.Effect<Buffer>
-): Effect.Effect<void, string> {
-  return Effect.fail('registerVirtualHID is not yet supported on Linux');
+): EffectGen<void, string> {
+  return yield* Effect.fail('registerVirtualHID is not yet supported on Linux');
 }

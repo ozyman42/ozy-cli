@@ -15,7 +15,10 @@ const SSH_DIR = "~/.ssh";
 export class SSHConfigImpl extends implementing(commonModules.SSHConfig) implements ISSHConfig {
   private *loadSSHConfigRaw(): EffectGen<SSHConfig, string> {
     const configPath = expandTilde(SSH_CONFIG_PATH);
-    const exists = yield* Effect.promise(() => fs.exists(configPath));
+    const exists = yield* Effect.tryPromise({
+      try: () => fs.exists(configPath),
+      catch: (e) => `Failed to check ssh config at ${configPath}: ${e instanceof Error ? e.message : String(e)}`,
+    });
     const text = exists
       ? yield* Effect.tryPromise({
           try: () => fs.readFile(configPath, "utf8"),
@@ -30,7 +33,10 @@ export class SSHConfigImpl extends implementing(commonModules.SSHConfig) impleme
 
   *getSSHConfig(): EffectGen<SSHConfigHosts, string> {
     const configPath = expandTilde(SSH_CONFIG_PATH);
-    const exists = yield* Effect.promise(() => fs.exists(configPath));
+    const exists = yield* Effect.tryPromise({
+      try: () => fs.exists(configPath),
+      catch: (e) => `Failed to check ssh config at ${configPath}: ${e instanceof Error ? e.message : String(e)}`,
+    });
     if (!exists)
       return yield* Effect.fail(`SSHConfigFileMissingError: No file found at ${configPath}`);
 

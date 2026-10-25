@@ -1,5 +1,12 @@
 import { type EffectGen } from "effective-modules";
-import { type Context, Effect } from "effect";
+import { type Context, Effect, Logger } from "effect";
+import { test as buntest } from "bun:test";
+
+export function test(property: string, effectfulFn: () => EffectGen<void, any, never>) {
+  buntest(property, async () => {
+    await Effect.runPromise(Effect.fn(effectfulFn)());
+  })
+}
 
 type MethodsRequireSelf<S extends Context.Service<any, any>> = {
   [k in keyof S["Service"]]: 
@@ -22,3 +29,6 @@ export function using<S extends Context.Service<any, any>>(service: S): MethodsR
     }
   }) as any;
 }
+
+const pureLogger = Logger.make<unknown, unknown>(({ message }) => message);
+export const pureLoggerLayer = Logger.layer([Logger.withLeveledConsole(pureLogger)]);

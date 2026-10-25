@@ -1,5 +1,6 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { Effect, Layer, pipe } from "effect";
+import { exitWhenUninstalled } from "jive-abstract-library";
 import { OSPlatformImpl } from "@/modules/common/os-platform/impl";
 import { CryptoImpl } from "@/modules/common/crypto/impl";
 import { KeyMapStoreImpl } from "@/modules/common/kep-map-store/impl";
@@ -8,6 +9,36 @@ import { SSHAgentImpl } from "@/modules/ssh-agent/ssh-agent/impl";
 import { SessionImpl } from "@/modules/ssh-agent/session/impl";
 import { AGENT_LOG_FILE_PATH, AGENT_PID_FILE_PATH, AGENT_PORT_FILE_PATH, AGENT_SOCK_FILE_PATH } from "@/common/constants";
 import { rmSync } from "node:fs";
+
+/**
+ * Stand down if another agent already holds the socket.
+ *
+ * One of these runs per installed copy of ozy-cli, because that is what decides how many daemons a Jive
+ * package gets — but there is only one `~/.ozy/ozy-signing-agent.sock`, and only one of them can own it.
+ * The loser exiting zero is what stops the service manager restarting it forever; it is also why this runs
+ * before anything below, since the cleanup handler deletes those files unconditionally and a late exit
+ * would take the incumbent's socket with it.
+ */
+function incumbentAgentPid(): number | undefined {
+  try {
+    const pid = Number.parseInt(readFileSync(AGENT_PID_FILE_PATH, "utf-8"), 10);
+    if (!Number.isInteger(pid) || pid === process.pid) return undefined;
+    // Signal 0 sends nothing; it only asks whether the process exists.
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    return undefined;
+  }
+}
+
+const incumbent = incumbentAgentPid();
+if (incumbent !== undefined) {
+  process.stderr.write(`ozy-signing-agent ${incumbent} already holds ${AGENT_SOCK_FILE_PATH} — standing down\n`);
+  process.exit(0);
+}
+
+// Takes this daemon's registration away with it if this copy of the package is ever uninstalled.
+exitWhenUninstalled();
 
 const origLog = console.log.bind(console);
 const origError = console.error.bind(console);

@@ -43,6 +43,11 @@ function failureResponse(): Buffer {
 const { KeyMapStore, OSPlatform } = commonModules;
 const { SSHAgent, Session } = agentModules;
 
+function* startSSHAgentService() {
+  const sshAgent = yield* agentModules.SSHAgent;
+  yield* sshAgent.start();
+}
+
 export class SSHAgentImpl extends implementing(SSHAgent).uses(Session, KeyMapStore, OSPlatform) implements ISSHAgent {
 
   private log(...items: any[]) {
@@ -129,8 +134,5 @@ export class SSHAgentImpl extends implementing(SSHAgent).uses(Session, KeyMapSto
     return Result.isSuccess(signResult) ? buildSignResponse(pubkey.keyType, signResult.success) : failureResponse();
   }
 
-  public static ServiceLayer = Layer.effectDiscard(Effect.gen(function*() {
-    const sshAgent = yield* agentModules.SSHAgent;
-    yield* sshAgent.start();
-  })).pipe(Layer.provideMerge(this.Layer))
+  public static ServiceLayer = Layer.effectDiscard(effunct(startSSHAgentService)()).pipe(Layer.provideMerge(this.Layer))
 }

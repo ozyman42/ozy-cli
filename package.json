@@ -1,15 +1,20 @@
 {
+  "$schema": "./package.schema.json",
   "name": "@ozyman42/ozy-cli",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "license": "MIT",
   "description": "Tools for setting up new packages, configuring with git & npm",
   "type": "module",
   "scripts": {
-    "jive:cicd:build": "bun src/scripts/build.ts",
-    "jive:cicd:unit-tests": "echo \"No unit tests\"",
-    "jive:cicd:upload-artifacts": "bun src/scripts/publish.ts",
-    "jive:cicd:deploy": "echo \"No deployments\"",
-    "build": "bun src/scripts/kill-existing-agent.ts && bun src/scripts/build.ts",
+    "jive:cicd:get-config": "jive-library cicd get-config",
+    "jive:cicd:build": "jive-library cicd build",
+    "jive:cicd:audit": "tsc --noEmit -p tsconfig.json",
+    "jive:cicd:upload-artifacts": "jive-library cicd upload-artifacts",
+    "jive:cicd:deploy": "jive-library cicd deploy",
+    "jive:cicd:deploy:url": "jive-library cicd deploy-url",
+    "jive:dev:precommit": "",
+    "build:local": "bun src/scripts/kill-existing-agent.ts && bun ../../jive-abstract-library/src/entrypoints/jive-library.ts cicd build",
+    "install:local": "bun run build:local && bun uninstall --global @ozyman42/ozy-cli ; bun add -g \"$(pwd)/dist/base\"",
     "prepare": "[ \"$CI\" = \"true\" ] || lefthook install"
   },
   "publishConfig": {
@@ -25,23 +30,43 @@
     "ejs": "^6.0.1",
     "jsonc-parser": "^3.3.1",
     "lefthook": "latest",
-    "typescript": "^5.9.3"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ozyman42/ozy-cli.git"
+    "typescript": "^5.9.3",
+    "jive-abstract-library": "0.1.8"
   },
   "dependencies": {
-    "@effect/platform-bun": "^4.0.0-beta.70",
+    "@effect/platform-bun": "^4.0.0",
     "@ozyman42/interactive-cli-select": "^0.2.0",
     "bip39": "^3.1.0",
     "bs58": "^6.0.0",
+    "chromium-bidi": "^13.0.0",
     "commander": "^13.1.0",
-    "effect": "4.0.0-beta.70",
-    "effective-modules": "0.3.1-effect4",
+    "effect": "^4.0.0",
+    "effective-modules": "0.3.5",
     "expand-tilde": "^2.0.2",
     "friendly-words": "^1.3.1",
+    "playwright-core": "^1.56.0",
     "ssh-config": "^5.0.3",
     "zod": "^3.24.2"
+  },
+  "jive": {
+    "cicd": {
+      "deploy": {
+        "verb": "Publish Tag",
+        "branches": {
+          "main": [
+            "latest"
+          ]
+        },
+        "previews": false,
+        "sequentially": true
+      },
+      "runsOnPullRequests": true,
+      "runsOn": "ubuntu-latest"
+    },
+    "library": {
+      "daemons": [
+        "ozy-signing-agent"
+      ]
+    }
   }
 }

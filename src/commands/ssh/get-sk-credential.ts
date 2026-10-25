@@ -1,10 +1,12 @@
-import { Effect } from "effect";
+import { Effect, pipe } from "effect";
+import { effunct, type EffectGen } from "effective-modules";
 import { makeCommand } from "@/common/command";
 import * as path from 'path';
 import * as fs from 'fs';
 import { log } from "@/common/log";
 import { selectFromList } from "@ozyman42/interactive-cli-select";
-import type { EffectGen } from "effective-modules";
+import { commonModules, type CommonModules } from "@/modules/common";
+import { OSPlatformImpl } from "@/modules/common/os-platform/impl";
 
 const OPENSSH_MAGIC = Buffer.from('openssh-key-v1\0', 'utf8');
 
@@ -83,28 +85,35 @@ function parseCredentialId(privateKeyPath: string): string {
   return pbString().toString('hex');
 }
 
-export const skCredential = makeCommand('sk-credential', 'get credential id of a given ssh security key pointer', () =>
-  Effect.gen(function* (): EffectGen<void, never> {
-    // Effect v3 → v4 shim: Effect.async was renamed to Effect.callback
-    (Effect as any).async = (Effect as any).callback;
+function* getCurrentDirectoryEffect(): EffectGen<string, never, CommonModules.OSPlatform> {
+  const osPlatform = yield* commonModules.OSPlatform;
+  return yield* osPlatform.getCurrentDirectory();
+}
 
-    const cwd = process.cwd();
-    const skKeys = fs.readdirSync(cwd).filter(name =>
-      !name.endsWith('.pub') && isSkPublicKey(path.join(cwd, `${name}.pub`))
-    );
+function getCurrentDirectory(): Effect.Effect<string, never> {
+  return pipe(effunct(getCurrentDirectoryEffect)(), Effect.provide(OSPlatformImpl.Layer));
+}
 
-    if (skKeys.length === 0) {
-      log('No SSH security keys found.');
-      return;
-    }
+export const skCredential = makeCommand('sk-credential', 'get credential id of a given ssh security key pointer', function* () {
+  // Effect v3 → v4 shim: Effect.async was renamed to Effect.callback
+  (Effect as any).async = (Effect as any).callback;
 
-    const choice = yield* selectFromList({
-      options: skKeys,
-      getKey: o => o,
-      renderOption: o => o,
-    }).pipe(Effect.orDie);
+  const cwd = yield* getCurrentDirectory();
+  const skKeys = fs.readdirSync(cwd).filter(name =>
+    !name.endsWith('.pub') && isSkPublicKey(path.join(cwd, `${name}.pub`))
+  );
 
-    const credentialId = parseCredentialId(path.join(cwd, choice));
-    log(`Credential ID: ${credentialId}`);
-  })
-);
+  if (skKeys.length === 0) {
+    log('No SSH security keys found.');
+    return;
+  }
+
+  const choice = yield* selectFromList({
+    options: skKeys,
+    getKey: o => o,
+    renderOption: o => o,
+  }).pipe(Effect.orDie);
+
+  const credentialId = parseCredentialId(path.join(cwd, choice));
+  log(`Credential ID: ${credentialId}`);
+});

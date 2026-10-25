@@ -1,6 +1,6 @@
 import type { EffectGen } from "effective-modules";
 import type { AgentRpcGroup } from "@/modules/ssh-agent/session/interface-rpc";
-import type { RpcClient, RpcClientError as RpcClientErrorModule, RpcGroup } from "effect/unstable/rpc";
+import type { RpcClient, RpcClientError as RpcClientErrorModule, RpcGroup } from "effect/rpc";
 import { Data } from "effect";
 
 export type AgentRpcClient = RpcClient.RpcClient<RpcGroup.Rpcs<AgentRpcGroup>, RpcClientErrorModule.RpcClientError>;

@@ -1,8 +1,9 @@
 import { Effect } from "effect";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { createInterface } from "node:readline";
 import * as net from "node:net";
 import { effunct, implementing, type EffectGen } from "effective-modules";
-import type { IOSPlatform, CallerProcess } from "./interface";
+import type { IOSPlatform, CallerProcess, DetachedProcess, ProcessResult, SpawnProcessInput } from "./interface";
 import { resolveCallerChainUnix, resolveCallerChainWindows } from "./caller-info";
 import { commonModules } from "@/modules/common";
 import { registerVirtualHID } from "./virtual-hid";
@@ -14,7 +15,7 @@ function openBrowserCommand(url: string): string[] {
   if (process.platform === 'darwin') return ['open', url];
   if (process.platform === 'linux') return ['xdg-open', url];
   // `start` is a cmd.exe builtin. The empty string is the window title slot.
-  if (isWindows) ['cmd.exe', '/c', 'start', '', url];
+  if (isWindows) return ['cmd.exe', '/c', 'start', '', url];
   // TODO: use exhaustive matching
   throw new Error("Unknown platform");
 }
@@ -36,6 +37,70 @@ function writeRestrictedFile(path: string, content: string): Effect.Effect<void,
       }
     },
     catch: (e) => `Failed to write restricted file ${path}: ${e instanceof Error ? e.message : String(e)}`,
+  });
+}
+
+function getCurrentDirectory(): Effect.Effect<string, never> {
+  return Effect.sync(() => process.cwd());
+}
+
+function changeDirectory(path: string): Effect.Effect<void, string> {
+  return Effect.try({
+    try: () => { process.chdir(path); },
+    catch: (e) => `Failed to change directory to ${path}: ${e instanceof Error ? e.message : String(e)}`,
+  });
+}
+
+function* promptInput(promptText: string): EffectGen<string, string> {
+  return yield* Effect.tryPromise({
+    try: () => new Promise<string>(resolve => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(promptText, answer => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    }),
+    catch: (e) => `Failed to read input: ${e instanceof Error ? e.message : String(e)}`,
+  });
+}
+
+function processCommand(input: SpawnProcessInput): string[] {
+  return [input.command, ...(input.args ?? [])];
+}
+
+function spawnOptions(input: SpawnProcessInput) {
+  return {
+    cwd: input.cwd,
+    env: input.env,
+    stdin: input.stdin ?? "ignore",
+    stdout: input.stdout ?? "pipe",
+    stderr: input.stderr ?? "pipe",
+  } as const;
+}
+
+function* spawnProcess(input: SpawnProcessInput): EffectGen<ProcessResult, string> {
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const proc = Bun.spawn(processCommand(input), spawnOptions(input));
+      const [exitCode, stdout, stderr] = await Promise.all([
+        proc.exited,
+        proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+        proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
+      ]);
+      return { exitCode, stdout, stderr };
+    },
+    catch: (e) => `Failed to run ${input.command}: ${e instanceof Error ? e.message : String(e)}`,
+  });
+}
+
+function* spawnDetachedProcess(input: SpawnProcessInput): EffectGen<DetachedProcess, string> {
+  return yield* Effect.try({
+    try: () => {
+      const proc = Bun.spawn(processCommand(input), spawnOptions(input));
+      proc.unref();
+      return { pid: proc.pid };
+    },
+    catch: (e) => `Failed to start ${input.command}: ${e instanceof Error ? e.message : String(e)}`,
   });
 }
 
@@ -61,6 +126,8 @@ function makeConnectionHandler(onData: (data: Buffer, callerChain: CallerProcess
 }
 
 export class OSPlatformImpl extends implementing(commonModules.OSPlatform) implements IOSPlatform {
+  *spawnProcess(input: SpawnProcessInput) { return yield* spawnProcess(input); }
+  *spawnDetachedProcess(input: SpawnProcessInput) { return yield* spawnDetachedProcess(input); }
   openBrowserWindow(url: string) { return openBrowserWindow(url); }
   writeRestrictedFile(path: string, content: string) { return writeRestrictedFile(path, content); }
   *startSocketServer(socketPath: string, onData: (data: Buffer, callerChain: CallerProcess[]) => EffectGen<Buffer>): EffectGen<void, string> {
@@ -88,4 +155,7 @@ export class OSPlatformImpl extends implementing(commonModules.OSPlatform) imple
     });
   }
   registerVirtualHID(onMessage: (data: Buffer) => Effect.Effect<Buffer>) { return registerVirtualHID(onMessage); }
+  getCurrentDirectory() { return getCurrentDirectory(); }
+  changeDirectory(path: string) { return changeDirectory(path); }
+  *promptInput(promptText: string) { return yield* promptInput(promptText); }
 }

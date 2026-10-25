@@ -10,8 +10,8 @@ import { SessionError, type ISession, type SetupInput, SetupOutput, StartSession
 import { AgentRpcGroup } from "./interface-rpc";
 import { prfFlow, PrfInput, type PrfResult } from "./prf-flow";
 import { AGENT_PORT_FILE_PATH, CURRENT_VERSION, DEFAULT_SESSION_TIMEOUT_SECONDS } from "@/common/constants";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { RpcServer, RpcSerialization } from "effect/unstable/rpc";
+import { HttpRouter, HttpServer } from "effect/http";
+import { RpcServer, RpcSerialization } from "effect/rpc";
 import { writeFileSync } from "node:fs";
 import { using } from "@/common/effective-modules-extensions";
 
@@ -33,6 +33,19 @@ const { OSPlatform, Crypto, KeyMapStore } = commonModules;
 const { Session } = agentModules;
 
 const SIGN_REQUESTS_COLLECTION_TIMEOUT_SECONDS = 3;
+
+function* writePortFile() {
+  const server = yield* HttpServer.HttpServer;
+  const { address } = server;
+  // Effect 4 split the old single `TcpAddress` into one tag per address family. Both IP families carry a
+  // port and are what this server binds to; a unix socket has no port and would mean the agent was
+  // configured in a way the port file cannot describe.
+  if (address._tag !== "InetAddressV4" && address._tag !== "InetAddressV6") {
+    yield* Effect.die(`Invariant server address of ${JSON.stringify(address)}`);
+    return;
+  }
+  writeFileSync(AGENT_PORT_FILE_PATH, address.port.toString());
+}
 
 export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, KeyMapStore) implements ISession {
   private activeSession: Option.Option<ActiveSession> = Option.none();
@@ -302,15 +315,7 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
   }
 
   public static makeRpcLayer() {
-    const writePortFile = Layer.effectDiscard(
-      Effect.gen(function* () {
-        const server = yield* HttpServer.HttpServer;
-        if (server.address._tag !== "TcpAddress") {
-          return Effect.die(`Invariant server address of ${JSON.stringify(server.address)}`);
-        }
-        writeFileSync(AGENT_PORT_FILE_PATH, server.address.port.toString());
-      })
-    );
+    const writePortFileLayer = Layer.effectDiscard(effunct(writePortFile)());
     return pipe(
       RpcServer.layerHttp({ group: AgentRpcGroup, path: "/rpc", protocol: "http" }),
       Layer.provideMerge(AgentRpcGroup.toLayer({
@@ -319,7 +324,7 @@ export class SessionImpl extends implementing(Session).uses(OSPlatform, Crypto, 
         Setup: using(Session).setup,
       })),
       HttpRouter.serve,
-      Layer.provideMerge(writePortFile),
+      Layer.provideMerge(writePortFileLayer),
       Layer.provideMerge(BunHttpServer.layer({ port: 0 })),
       Layer.provideMerge(RpcSerialization.layerJson),
       Layer.provideMerge(this.Layer)

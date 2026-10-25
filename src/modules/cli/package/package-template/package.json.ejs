@@ -1,0 +1,25 @@
+{
+  "name": <%- JSON.stringify(packageName) %>,
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "jive:cicd:get-config": "jive-library cicd get-config",
+    "jive:cicd:build": "jive-library cicd build",
+    "jive:cicd:audit": "tsc --noEmit -p tsconfig.json",
+    "jive:cicd:deploy:url": "jive-library cicd deploy-url",
+    "jive:cicd:upload-artifacts": "jive-library cicd upload-artifacts",
+    "jive:cicd:deploy": "jive-library cicd deploy"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": <%- JSON.stringify(repositoryUrl) %>
+  }
+}

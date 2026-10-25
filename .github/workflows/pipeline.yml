@@ -9,18 +9,14 @@ on:
   push:
   workflow_dispatch:
 
+# A reusable workflow can only reduce the caller's permissions, never raise them. The deploy job needs
+# id-token:write for trusted publishing, so the caller has to grant it here.
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   pipeline:
     name: Pipeline
     uses: jive-sh/jive/.github/workflows/reusable-pipeline.yml@main
     secrets: inherit
-    permissions:
-      id-token: write
-      contents: read
-    with:
-      deploy-branches: |
-        {
-          "main": []
-        }
-      run-on-pull-requests: true
-      enable-preview-deploys: false

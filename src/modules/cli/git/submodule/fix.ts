@@ -2,6 +2,8 @@ import { existsSync, statSync } from "node:fs";
 import { readFile, writeFile, rename, mkdir, rm } from "node:fs/promises";
 import { resolve, join, dirname, relative } from "node:path";
 import { Effect } from "effect";
+import type { EffectGen } from "effective-modules";
+import type { IOSPlatform } from "@/modules/common/os-platform/interface";
 import type { Gitmodules } from "./gitmodules";
 import type { ModuleDirInfo, IndexGitlink } from "./git-state";
 import { resolveGitDir } from "./resolve-git-dir";
@@ -70,43 +72,71 @@ function removeExtraConfigSubmodules(content: string, modules: Gitmodules): { re
   return { result: output.join("\n"), removed };
 }
 
-async function spawnGit(args: string[], cwd: string): Promise<void> {
-  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  const code = await proc.exited;
-  if (code !== 0) {
-    const err = await new Response(proc.stderr).text();
-    throw new Error(`git ${args.join(" ")} exited with code ${code}\n${err.trim()}`);
+function* readTextFile(path: string): EffectGen<string, string> {
+  return yield* Effect.tryPromise({
+    try: () => readFile(path, "utf8"),
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
+}
+
+function* writeTextFile(path: string, content: string): EffectGen<void, string> {
+  return yield* Effect.tryPromise({
+    try: () => writeFile(path, content, "utf8"),
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
+}
+
+function* makeDirectory(path: string): EffectGen<void, string> {
+  yield* Effect.tryPromise({
+    try: () => mkdir(path, { recursive: true }),
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
+}
+
+function* renamePath(from: string, to: string): EffectGen<void, string> {
+  return yield* Effect.tryPromise({
+    try: () => rename(from, to),
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
+}
+
+function* removePath(path: string): EffectGen<void, string> {
+  return yield* Effect.tryPromise({
+    try: () => rm(path, { recursive: true, force: true }),
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
+}
+
+function* spawnGit(osPlatform: IOSPlatform, args: string[], cwd: string): EffectGen<void, string> {
+  const result = yield* osPlatform.spawnProcess({ command: "git", args, cwd });
+  if (result.exitCode !== 0) {
+    return yield* Effect.fail(`git ${args.join(" ")} exited with code ${result.exitCode}\n${result.stderr.trim()}`);
   }
 }
 
-export function fixGitConfig(repoRoot: string, modules: Gitmodules): Effect.Effect<Fix[], string> {
-  return Effect.tryPromise({
-    try: async () => {
-      const gitDir = await resolveGitDir(repoRoot);
-      const configPath = resolve(gitDir, "config");
-      const content = await readFile(configPath, "utf8");
-      const { result: afterRemoval, removed } = removeExtraConfigSubmodules(content, modules);
+export function* fixGitConfig(repoRoot: string, modules: Gitmodules): EffectGen<Fix[], string> {
+  const gitDir = yield* resolveGitDir(repoRoot);
+  const configPath = resolve(gitDir, "config");
+  const content = yield* readTextFile(configPath);
+  const { result: afterRemoval, removed } = removeExtraConfigSubmodules(content, modules);
 
-      const existingNames = new Set<string>(
-        [...afterRemoval.matchAll(/^\[submodule "(.+)"\]$/gm)].map((m) => m[1]!)
-      );
-      const missing = modules.list.filter((m) => !existingNames.has(m.name));
+  const existingNames = new Set<string>(
+    [...afterRemoval.matchAll(/^\[submodule "(.+)"\]$/gm)].map((m) => m[1]!)
+  );
+  const missing = modules.list.filter((m) => !existingNames.has(m.name));
 
-      let result = afterRemoval;
-      for (const m of missing) {
-        if (!result.endsWith("\n")) result += "\n";
-        result += `[submodule "${m.name}"]\n\tactive = true\n\turl = ${m.url}\n\tpath = ${m.path}\n`;
-      }
+  let result = afterRemoval;
+  for (const m of missing) {
+    if (!result.endsWith("\n")) result += "\n";
+    result += `[submodule "${m.name}"]\n\tactive = true\n\turl = ${m.url}\n\tpath = ${m.path}\n`;
+  }
 
-      if (removed.length === 0 && missing.length === 0) return [];
-      await writeFile(configPath, result, "utf8");
-      return [
-        ...removed.map((name) => ({ location: [".git", "config", name], action: "deleted" as const })),
-        ...missing.map((m) => ({ location: [".git", "config", m.name], action: "synced" as const })),
-      ];
-    },
-    catch: (e) => e instanceof Error ? e.message : String(e),
-  });
+  if (removed.length === 0 && missing.length === 0) return [];
+  yield* writeTextFile(configPath, result);
+  return [
+    ...removed.map((name) => ({ location: [".git", "config", name], action: "deleted" as const })),
+    ...missing.map((m) => ({ location: [".git", "config", m.name], action: "synced" as const })),
+  ];
 }
 
 const GIT_MODULES_MARKER = ".git/modules/";
@@ -123,38 +153,39 @@ function recoverStaleGitDirTarget(redirectContent: string, topLevelRoot: string)
   return resolve(topLevelRoot, match[1]!.slice(idx).trim());
 }
 
-// Moves existing git data into moduleGitDir instead of abandoning it, whether it's a
-// standalone clone's literal .git directory, or a redirect file (even a stale one
-// left over from a path rename) pointing at git data that still exists.
-async function migrateExistingGitDir(workingTreeDir: string, moduleGitDir: string, topLevelRoot: string): Promise<boolean> {
+/**
+ * Moves existing git data into moduleGitDir instead of abandoning it, whether it's a
+ * standalone clone's literal .git directory, or a redirect file (even a stale one
+ * left over from a path rename) pointing at git data that still exists.
+ */
+function* migrateExistingGitDir(workingTreeDir: string, moduleGitDir: string, topLevelRoot: string): EffectGen<boolean, string> {
   const dotGit = join(workingTreeDir, ".git");
   if (!existsSync(dotGit)) return false;
 
   if (statSync(dotGit).isDirectory()) {
-    await mkdir(dirname(moduleGitDir), { recursive: true });
-    await rename(dotGit, moduleGitDir);
+    yield* makeDirectory(dirname(moduleGitDir));
+    yield* renamePath(dotGit, moduleGitDir);
     return true;
   }
 
-  const content = await readFile(dotGit, "utf8");
+  const content = yield* readTextFile(dotGit);
   const target = recoverStaleGitDirTarget(content, topLevelRoot);
   if (!target || target === moduleGitDir || !existsSync(target)) return false;
-  await mkdir(dirname(moduleGitDir), { recursive: true });
-  await rename(target, moduleGitDir);
+  yield* makeDirectory(dirname(moduleGitDir));
+  yield* renamePath(target, moduleGitDir);
   return true;
 }
 
-export function fixModuleDirs(
+export function* fixModuleDirs(
+  osPlatform: IOSPlatform,
   repoRoot: string,
   modules: Gitmodules,
   moduleDirs: ModuleDirInfo[],
   orphanModuleDirs: string[],
   topLevelRoot: string,
-): Effect.Effect<Fix[], string> {
-  return Effect.tryPromise({
-    try: async () => {
-      const fixes: Fix[] = [];
-      const modulesRoot = resolve(await resolveGitDir(repoRoot), "modules");
+): EffectGen<Fix[], string> {
+  const fixes: Fix[] = [];
+  const modulesRoot = resolve(yield* resolveGitDir(repoRoot), "modules");
 
       // Establish each module's git dir (migrating existing data if any exists
       // anywhere) before the orphan cleanup below runs, so nothing real gets deleted
@@ -168,12 +199,12 @@ export function fixModuleDirs(
         let freshlyCloned = false;
 
         if (!alreadyEstablished) {
-          const migrated = await migrateExistingGitDir(workingTreeDir, moduleGitDir, topLevelRoot);
+          const migrated = yield* migrateExistingGitDir(workingTreeDir, moduleGitDir, topLevelRoot);
           if (migrated) {
             fixes.push({ location: [".git", "modules", ...m.path.split("/")], action: "synced", detail: "migrated" });
           } else {
-            await mkdir(dirname(moduleGitDir), { recursive: true });
-            await spawnGit(["clone", "--bare", m.url, moduleGitDir], repoRoot);
+            yield* makeDirectory(dirname(moduleGitDir));
+            yield* spawnGit(osPlatform, ["clone", "--bare", m.url, moduleGitDir], repoRoot);
             fixes.push({ location: [".git", "modules", ...m.path.split("/")], action: "synced", detail: "initialized" });
             freshlyCloned = true;
           }
@@ -182,17 +213,22 @@ export function fixModuleDirs(
         if (freshlyCloned) {
           const configFile = join(moduleGitDir, "config");
           const worktree = relative(moduleGitDir, workingTreeDir);
-          await spawnGit(["config", "-f", configFile, "core.bare", "false"], repoRoot);
-          await spawnGit(["config", "-f", configFile, "core.worktree", worktree], repoRoot);
+          yield* spawnGit(osPlatform, ["config", "-f", configFile, "core.bare", "false"], repoRoot);
+          yield* spawnGit(osPlatform, ["config", "-f", configFile, "core.worktree", worktree], repoRoot);
         }
 
         // A bare clone (whether just made above, or left over from a prior buggy
         // run) never gets an index — populate it from HEAD whenever it's missing,
         // not only right after we ourselves created it.
         if (!existsSync(join(moduleGitDir, "index"))) {
-          const headCheck = Bun.spawn(["git", "--git-dir", moduleGitDir, "rev-parse", "--verify", "HEAD"], { stdout: "ignore", stderr: "ignore" });
-          if ((await headCheck.exited) !== 0) await spawnGit(["--git-dir", moduleGitDir, "fetch", "origin"], repoRoot);
-          await spawnGit(["--git-dir", moduleGitDir, "read-tree", "HEAD"], repoRoot);
+          const headCheck = yield* osPlatform.spawnProcess({
+            command: "git",
+            args: ["--git-dir", moduleGitDir, "rev-parse", "--verify", "HEAD"],
+            stdout: "ignore",
+            stderr: "ignore",
+          });
+          if (headCheck.exitCode !== 0) yield* spawnGit(osPlatform, ["--git-dir", moduleGitDir, "fetch", "origin"], repoRoot);
+          yield* spawnGit(osPlatform, ["--git-dir", moduleGitDir, "read-tree", "HEAD"], repoRoot);
           fixes.push({ location: [".git", "modules", ...m.path.split("/")], action: "synced", detail: "populated index" });
         }
 
@@ -202,10 +238,10 @@ export function fixModuleDirs(
         const rel = relative(workingTreeDir, moduleGitDir);
         const desired = `gitdir: ${rel}\n`;
         const current = existsSync(dotGit) && !statSync(dotGit).isDirectory()
-          ? await readFile(dotGit, "utf8")
+          ? yield* readTextFile(dotGit)
           : undefined;
         if (current !== desired) {
-          await writeFile(dotGit, desired, "utf8");
+          yield* writeTextFile(dotGit, desired);
           fixes.push({ location: [...m.path.split("/"), ".git"], action: "synced" });
         }
       }
@@ -215,14 +251,14 @@ export function fixModuleDirs(
       for (const d of moduleDirs) {
         const gm = gmByPath.get(d.relativePath);
         if (!gm && existsSync(join(modulesRoot, d.relativePath))) {
-          await rm(join(modulesRoot, d.relativePath), { recursive: true, force: true });
+          yield* removePath(join(modulesRoot, d.relativePath));
           fixes.push({ location: [".git", "modules", ...d.relativePath.split("/")], action: "deleted" });
         }
       }
 
       for (const rel of orphanModuleDirs) {
         if (existsSync(join(modulesRoot, rel))) {
-          await rm(join(modulesRoot, rel), { recursive: true, force: true });
+          yield* removePath(join(modulesRoot, rel));
           fixes.push({ location: [".git", "modules", ...rel.split("/")], action: "deleted" });
         }
       }
@@ -232,46 +268,47 @@ export function fixModuleDirs(
         if (!existsSync(moduleGitDir)) continue;
         const configFile = join(moduleGitDir, "config");
 
-        const readConfig = (key: string) =>
-          Bun.spawn(["git", "config", "-f", configFile, key], { cwd: repoRoot, stdout: "pipe", stderr: "pipe" });
-
-        const [currentUrl, currentWorktree] = await Promise.all([
-          new Response(readConfig("remote.origin.url").stdout).text().then(t => t.trim()),
-          new Response(readConfig("core.worktree").stdout).text().then(t => t.trim()),
-        ]);
+        const currentUrlResult = yield* osPlatform.spawnProcess({
+          command: "git",
+          args: ["config", "-f", configFile, "remote.origin.url"],
+          cwd: repoRoot,
+        });
+        const currentWorktreeResult = yield* osPlatform.spawnProcess({
+          command: "git",
+          args: ["config", "-f", configFile, "core.worktree"],
+          cwd: repoRoot,
+        });
+        const currentUrl = currentUrlResult.exitCode === 0 ? currentUrlResult.stdout.trim() : "";
+        const currentWorktree = currentWorktreeResult.exitCode === 0 ? currentWorktreeResult.stdout.trim() : "";
 
         const worktree = relative(moduleGitDir, resolve(repoRoot, m.path));
 
         if (currentUrl !== m.url) {
-          await spawnGit(["config", "-f", configFile, "remote.origin.url", m.url], repoRoot);
+          yield* spawnGit(osPlatform, ["config", "-f", configFile, "remote.origin.url", m.url], repoRoot);
           fixes.push({ location: [".git", "modules", ...m.path.split("/"), "config"], action: "synced", detail: "remote.origin.url" });
         }
         if (currentWorktree !== worktree) {
-          await spawnGit(["config", "-f", configFile, "core.worktree", worktree], repoRoot);
+          yield* spawnGit(osPlatform, ["config", "-f", configFile, "core.worktree", worktree], repoRoot);
           fixes.push({ location: [".git", "modules", ...m.path.split("/"), "config"], action: "synced", detail: "core.worktree" });
         }
       }
 
       return fixes;
-    },
-    catch: (e) => e instanceof Error ? e.message : String(e),
-  });
 }
 
-export function fixIndexGitlinks(
+export function* fixIndexGitlinks(
+  osPlatform: IOSPlatform,
   repoRoot: string,
   modules: Gitmodules,
   currentIndex: IndexGitlink[],
-): Effect.Effect<Fix[], string> {
-  return Effect.tryPromise({
-    try: async () => {
-      const currentShas = new Map(currentIndex.map((e) => [e.path, e.commit]));
-      const validPaths = new Set(modules.list.map((m) => m.path));
-      const fixes: Fix[] = [];
+): EffectGen<Fix[], string> {
+  const currentShas = new Map(currentIndex.map((e) => [e.path, e.commit]));
+  const validPaths = new Set(modules.list.map((m) => m.path));
+  const fixes: Fix[] = [];
 
       for (const entry of currentIndex) {
         if (!validPaths.has(entry.path)) {
-          await spawnGit(["update-index", "--force-remove", entry.path], repoRoot);
+          yield* spawnGit(osPlatform, ["update-index", "--force-remove", entry.path], repoRoot);
           fixes.push({ location: [".git", "index"], action: "deleted", detail: entry.path });
         }
       }
@@ -280,19 +317,20 @@ export function fixIndexGitlinks(
         const workingTree = resolve(repoRoot, m.path);
         if (!existsSync(workingTree)) continue;
 
-        const shaProc = Bun.spawn(["git", "rev-parse", "HEAD"], { cwd: workingTree, stdout: "pipe", stderr: "pipe" });
-        const sha = (await new Response(shaProc.stdout).text()).trim();
+        const shaResult = yield* osPlatform.spawnProcess({
+          command: "git",
+          args: ["rev-parse", "HEAD"],
+          cwd: workingTree,
+        });
+        const sha = shaResult.exitCode === 0 ? shaResult.stdout.trim() : "";
         if (!/^[0-9a-f]{40}$/.test(sha)) continue;
 
         const current = currentShas.get(m.path);
-        await spawnGit(["update-index", "--add", "--cacheinfo", `160000,${sha},${m.path}`], repoRoot);
+        yield* spawnGit(osPlatform, ["update-index", "--add", "--cacheinfo", `160000,${sha},${m.path}`], repoRoot);
         if (current !== sha) {
           fixes.push({ location: [".git", "index"], action: "synced", detail: `${m.path}: ${sha.slice(0, 8)}` });
         }
       }
 
       return fixes;
-    },
-    catch: (e) => e instanceof Error ? e.message : String(e),
-  });
 }

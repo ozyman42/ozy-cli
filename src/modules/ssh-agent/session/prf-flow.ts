@@ -82,8 +82,7 @@ export function* prfFlow(input: PrfInput): EffectGen<PrfResult, SessionError, Co
                 browserPublicKey: string; credentialId: string;
                 cacheMinutes?: number;
               };
-              Effect.runFork(Effect.gen(function* () {
-                const innerResult = yield* Effect.result(Effect.gen(function* () {
+              function* completeSeed(): EffectGen<void, string | SessionError> {
                   const decrypted = yield* crypto.decrypt({
                     senderPubkey: body.browserPublicKey,
                     receiverKey: agentKeyPair.keyPair,
@@ -101,14 +100,17 @@ export function* prfFlow(input: PrfInput): EffectGen<PrfResult, SessionError, Co
                       reason: 'Detected multiple POSTs to seed endpoint'
                     }));
                   }
-                }));
+              }
+              function* handleSeedPost(): EffectGen<void> {
+                const innerResult = yield* Effect.result(effunct(completeSeed)());
                 if (Result.isFailure(innerResult)) {
                   console.error('[/seed fork error]', innerResult.failure);
                   yield* Deferred.fail(deferred, SessionError.cases.InternalError.make({
                     reason: `Seed decryption failed: ${String(innerResult.failure)}`
                   }));
                 }
-              }));
+              }
+              Effect.runFork(effunct(handleSeedPost)());
               return new Response(JSON.stringify({ ok: true, friendlyName: CredentialId.fromBase64(body.credentialId).humanReadableName }), {
                 headers: { "Content-Type": "application/json" },
               });

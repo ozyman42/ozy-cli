@@ -2,6 +2,8 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { Effect, Option } from "effect";
+import type { EffectGen } from "effective-modules";
+import type { IOSPlatform } from "@/modules/common/os-platform/interface";
 import { resolveGitDir } from "./resolve-git-dir";
 
 // --- types ---
@@ -123,25 +125,29 @@ function scanModuleDirs(
   return { gitDirs, orphanDirs };
 }
 
-async function readModuleDirRemoteUrl(abs: string): Promise<Option.Option<string>> {
+function* readTextFile(path: string): EffectGen<string, string> {
+  return yield* Effect.tryPromise({
+    try: () => readFile(path, "utf8"),
+    catch: (e) => e instanceof Error ? e.message : String(e),
+  });
+}
+
+function* readModuleDirRemoteUrl(abs: string): EffectGen<Option.Option<string>, string> {
   const configPath = join(abs, "config");
   if (!existsSync(configPath)) return Option.none();
-  const content = await readFile(configPath, "utf8");
+  const content = yield* readTextFile(configPath);
   const match = content.match(/\[remote "origin"\][^\[]*\n\s+url\s*=\s*(.+)/);
   return match?.[1] ? Option.some(match[1].trim()) : Option.none();
 }
 
-async function spawnGitInDir(args: string[], cwd: string): Promise<string | { error: string }> {
-  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  const [code, out, err] = await Promise.all([
-    proc.exited,
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  return code === 0 ? out.trim() : { error: err.trim().split("\n")[0]! };
+function* spawnGitInDir(osPlatform: IOSPlatform, args: string[], cwd: string): EffectGen<string | { error: string }, string> {
+  const result = yield* osPlatform.spawnProcess({ command: "git", args, cwd });
+  return result.exitCode === 0
+    ? result.stdout.trim()
+    : { error: result.stderr.trim().split("\n")[0]! };
 }
 
-async function readWorkingTreeEntry(repoRoot: string, subPath: string): Promise<WorkingTreeGitEntry> {
+function* readWorkingTreeEntry(osPlatform: IOSPlatform, repoRoot: string, subPath: string): EffectGen<WorkingTreeGitEntry, string> {
   const workingTreeAbs = join(repoRoot, subPath);
   const dotGit = join(workingTreeAbs, ".git");
 
@@ -154,64 +160,62 @@ async function readWorkingTreeEntry(repoRoot: string, subPath: string): Promise<
     type = "dir";
   } else {
     type = "file";
-    const content = await readFile(dotGit, "utf8");
+    const content = yield* readTextFile(dotGit);
     const match = content.match(/^gitdir:\s*(.+)$/m);
     gitdirTarget = match?.[1].trim();
   }
 
   if (!existsSync(workingTreeAbs)) return { path: subPath, type, gitdirTarget };
 
-  const [remote, headCommit] = await Promise.all([
-    spawnGitInDir(["remote", "get-url", "origin"], workingTreeAbs),
-    spawnGitInDir(["rev-parse", "HEAD"], workingTreeAbs),
-  ]);
+  const remote = yield* spawnGitInDir(osPlatform, ["remote", "get-url", "origin"], workingTreeAbs);
+  const headCommit = yield* spawnGitInDir(osPlatform, ["rev-parse", "HEAD"], workingTreeAbs);
 
   return { path: subPath, type, gitdirTarget, remote, headCommit };
 }
 
 // --- main reader ---
 
-export function readGitState(repoRoot: string, extraPaths: string[] = []): Effect.Effect<GitState, string> {
-  return Effect.tryPromise({
-    try: async () => {
-      const gitDir = await resolveGitDir(repoRoot);
+export function* readGitState(osPlatform: IOSPlatform, repoRoot: string, extraPaths: string[] = []): EffectGen<GitState, string> {
+  const gitDir = yield* resolveGitDir(repoRoot);
 
-      const [configContent, lsOutput] = await Promise.all([
-        readFile(resolve(gitDir, "config"), "utf8"),
-        new Response(
-          Bun.spawn(["git", "ls-files", "--stage"], { cwd: repoRoot, stdout: "pipe" }).stdout
-        ).text(),
-      ]);
+  const configContent = yield* readTextFile(resolve(gitDir, "config"));
+  const lsResult = yield* osPlatform.spawnProcess({
+    command: "git",
+    args: ["ls-files", "--stage"],
+    cwd: repoRoot,
+  });
+  if (lsResult.exitCode !== 0)
+    return yield* Effect.fail(`git ls-files --stage failed: ${lsResult.stderr.trim() || `exit code ${lsResult.exitCode}`}`);
 
-      const config = parseGitConfig(configContent);
-      const index = parseIndexGitlinks(lsOutput);
-
-      const modulePaths = new Set(extraPaths);
-      const modulesRoot = resolve(gitDir, "modules");
-      const { gitDirs: moduleDirPaths, orphanDirs: orphanModuleDirs } = scanModuleDirs(modulesRoot, modulePaths);
-      const moduleDirs = await Promise.all(
-        moduleDirPaths.map(async (rel) => {
-          const remoteUrlOption = await readModuleDirRemoteUrl(join(modulesRoot, rel));
-          return {
-            relativePath: rel,
-            remoteUrl: Option.isSome(remoteUrlOption) ? remoteUrlOption.value : undefined,
-          };
-        })
-      );
-
-      const allPaths = [
-        ...new Set([
-          ...index.map((e) => e.path),
-          ...config.flatMap((e) => (e.path ? [e.path] : [])),
-          ...extraPaths,
-        ]),
-      ];
-      const workingTree = await Promise.all(
-        allPaths.map((p) => readWorkingTreeEntry(repoRoot, p))
-      );
-
-      return { config, moduleDirs, orphanModuleDirs, index, workingTree };
-    },
+  const config = parseGitConfig(configContent);
+  const index = yield* Effect.try({
+    try: () => parseIndexGitlinks(lsResult.stdout),
     catch: (e) => e instanceof Error ? e.message : String(e),
   });
+
+  const modulePaths = new Set(extraPaths);
+  const modulesRoot = resolve(gitDir, "modules");
+  const { gitDirs: moduleDirPaths, orphanDirs: orphanModuleDirs } = scanModuleDirs(modulesRoot, modulePaths);
+  const moduleDirs: ModuleDirInfo[] = [];
+  for (const rel of moduleDirPaths) {
+    const remoteUrlOption = yield* readModuleDirRemoteUrl(join(modulesRoot, rel));
+    moduleDirs.push({
+      relativePath: rel,
+      remoteUrl: Option.isSome(remoteUrlOption) ? remoteUrlOption.value : undefined,
+    });
+  }
+
+  const allPaths = [
+    ...new Set([
+      ...index.map((e) => e.path),
+      ...config.flatMap((e) => (e.path ? [e.path] : [])),
+      ...extraPaths,
+    ]),
+  ];
+  const workingTree: WorkingTreeGitEntry[] = [];
+  for (const path of allPaths) {
+    workingTree.push(yield* readWorkingTreeEntry(osPlatform, repoRoot, path));
+  }
+
+  return { config, moduleDirs, orphanModuleDirs, index, workingTree };
 }

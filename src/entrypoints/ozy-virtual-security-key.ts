@@ -1,10 +1,11 @@
 import { Effect } from "effect";
+import { effunct, type EffectGen } from "effective-modules";
 import { appendFileSync } from "node:fs";
-import { commonModules } from "@/modules/common";
+import { commonModules, type CommonModules } from "@/modules/common";
 import { OSPlatformImpl } from "@/modules/common/os-platform/impl";
 import { VIRTUAL_KEY_LOG_FILE_PATH } from "@/common/constants";
 
-const program = Effect.gen(function* () {
+function* program(): EffectGen<void, string, CommonModules.OSPlatform> {
   const platform = yield* commonModules.OSPlatform;
   yield* platform.registerVirtualHID((data) =>
     Effect.sync(() => {
@@ -13,9 +14,9 @@ const program = Effect.gen(function* () {
     })
   );
   yield* Effect.never;
-}).pipe(Effect.provide(OSPlatformImpl.Layer));
+}
 
-Effect.runPromise(program).catch(e => {
+Effect.runPromise(effunct(program)().pipe(Effect.provide(OSPlatformImpl.Layer))).catch(e => {
   console.error('Virtual security key failed:', e);
   process.exit(1);
 });
