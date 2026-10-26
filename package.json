@@ -1,7 +1,7 @@
 {
   "$schema": "./package.schema.json",
   "name": "@ozyman42/ozy-cli",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "license": "MIT",
   "description": "Tools for setting up new packages, configuring with git & npm",
   "type": "module",
@@ -11,7 +11,7 @@
     "jive:cicd:audit": "tsc --noEmit -p tsconfig.json",
     "jive:cicd:upload-artifacts": "jive-library cicd upload-artifacts",
     "jive:cicd:deploy": "jive-library cicd deploy",
-    "jive:cicd:deploy:url": "jive-library cicd deploy-url",
+    "jive:cicd:deploy:plan": "jive-library cicd deploy-plan",
     "jive:dev:precommit": "",
     "build:local": "bun src/scripts/kill-existing-agent.ts && bun ../../jive-abstract-library/src/entrypoints/jive-library.ts cicd build",
     "install:local": "bun run build:local && bun uninstall --global @ozyman42/ozy-cli ; bun add -g \"$(pwd)/dist/base\"",
@@ -31,7 +31,7 @@
     "jsonc-parser": "^3.3.1",
     "lefthook": "latest",
     "typescript": "^5.9.3",
-    "jive-abstract-library": "0.1.8"
+    "jive-abstract-library": "0.2.0"
   },
   "dependencies": {
     "@effect/platform-bun": "^4.0.0",
