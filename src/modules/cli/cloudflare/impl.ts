@@ -89,8 +89,9 @@ export class CloudflareImpl extends implementing(cliModules.Cloudflare)
     // permission rows, which are nested comboboxes — never has to be scripted.
     const url = new URL("/profile/api-tokens", DASHBOARD);
     url.searchParams.set("name", request.name);
-    url.searchParams.set("permissionGroupKeys", JSON.stringify(request.permissionGroupKeys));
+    url.searchParams.set("permissionGroupKeys", JSON.stringify(request.permissions));
     url.searchParams.set("accountId", accountId);
+    url.searchParams.set("zoneId", "all");
 
     log("Opening the token form with the permissions prefilled");
     yield* this.go(page, url.toString());

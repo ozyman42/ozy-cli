@@ -20,11 +20,16 @@ export interface ApiTokenRequest {
   /** Shown in the Cloudflare dashboard's token list. */
   readonly name: string;
   /**
-   * Permission group keys, as the dashboard's deep link names them — for example
-   * `com.cloudflare.edge.worker.script.update`. These prefill the form so the fragile part of the UI,
-   * the permission rows, never has to be scripted.
+   * Permissions as the dashboard's token-template deep link names them — for example
+   * `{ key: "workers_kv_storage", type: "edit" }` (https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/).
+   * These prefill the form so the fragile part of the UI, the permission rows, never has to be scripted.
    */
-  readonly permissionGroupKeys: ReadonlyArray<string>;
+  readonly permissions: ReadonlyArray<TemplatePermission>;
+}
+
+export interface TemplatePermission {
+  readonly key: string;
+  readonly type: "read" | "edit";
 }
 
 /** What the person chose, read back from where they chose it. */
