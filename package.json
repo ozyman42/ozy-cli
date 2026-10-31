@@ -1,14 +1,14 @@
 {
   "$schema": "./package.schema.json",
   "name": "@ozyman42/ozy-cli",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "license": "MIT",
   "description": "Tools for setting up new packages, configuring with git & npm",
   "type": "module",
   "scripts": {
     "jive:cicd:get-config": "jive-library cicd get-config",
     "jive:cicd:build": "jive-library cicd build",
-    "jive:cicd:audit": "tsc --noEmit -p tsconfig.json",
+    "jive:cicd:audit": "tsc --noEmit -p tsconfig.json && bun test src/common src/modules/cli/cloudflare",
     "jive:cicd:upload-artifacts": "jive-library cicd upload-artifacts",
     "jive:cicd:deploy": "jive-library cicd deploy",
     "jive:cicd:deploy:plan": "jive-library cicd deploy-plan",

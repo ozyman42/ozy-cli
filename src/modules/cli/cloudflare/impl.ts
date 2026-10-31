@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { implementing, type EffectGen } from "effective-modules";
-import type { BrowserContext, Page } from "playwright-core";
+import type { BrowserContext, BrowserType, Page } from "playwright-core";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "@/common/log";
@@ -40,6 +40,17 @@ const FIND_TOKEN_ON_PAGE = `() => {
  */
 const profileDir = (): string => join(homedir(), ".ozy", "browser", "cloudflare");
 
+export const CHROME_LAUNCH_OPTIONS = {
+  headless: false,
+  // The installed Chrome, not a downloaded Chromium: no 300MB fetch, and a browser the dashboard's
+  // bot checks are used to seeing.
+  channel: "chrome",
+  // Playwright passes `--no-sandbox` unless this is true, and the window it opens is one a person signs in to.
+  chromiumSandbox: true,
+  viewport: null,
+  args: ["--window-size=1280,900"],
+} as const satisfies Parameters<BrowserType["launchPersistentContext"]>[1];
+
 /** Long enough for a person to find a second factor; not so long that a forgotten window hangs the CLI. */
 const HUMAN_TIMEOUT_MS = 5 * 60 * 1000;
 const STEP_TIMEOUT_MS = 20 * 1000;
@@ -56,14 +67,7 @@ export class CloudflareImpl extends implementing(cliModules.Cloudflare)
       catch: (cause) => `Could not load playwright-core: ${String(cause)}`,
     });
     const context = yield* Effect.tryPromise({
-      try: () => chromium.launchPersistentContext(profileDir(), {
-        headless: false,
-        // The installed Chrome, not a downloaded Chromium: no 300MB fetch, and a browser the dashboard's
-        // bot checks are used to seeing.
-        channel: "chrome",
-        viewport: null,
-        args: ["--window-size=1280,900"],
-      }),
+      try: () => chromium.launchPersistentContext(profileDir(), CHROME_LAUNCH_OPTIONS),
       catch: (cause) => `Could not start Chrome: ${String(cause)}`,
     });
 

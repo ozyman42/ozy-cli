@@ -11,7 +11,8 @@ export function makeCommand(name: string, description: string,
       const result = await Effect.runPromise(pipe(effunct(action)(), Effect.result));
       if (Result.isFailure(result)) {
         log(`✗ ${result.failure}`);
+        process.exit(1);
       }
-      process.exit();
+      process.exit(0);
     });
 }
